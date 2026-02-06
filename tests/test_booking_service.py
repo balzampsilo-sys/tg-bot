@@ -52,14 +52,16 @@ class TestCreateBooking:
         time_str = "10:00"
         
         # Первое бронирование
-        await booking_service.create_booking(tomorrow, time_str, 12345, "user1")
+        success1, error1 = await booking_service.create_booking(tomorrow, time_str, 12345, "user1")
+        assert success1 is True
+        assert error1 == "success"
         
         # Попытка забронировать тот же слот другим пользователем
-        success, error_code = await booking_service.create_booking(
+        success2, error_code = await booking_service.create_booking(
             tomorrow, time_str, 67890, "user2"
         )
         
-        assert success is False
+        assert success2 is False
         assert error_code == "slot_taken"
         
         # Проверяем что у второго пользователя нет записей
@@ -74,10 +76,11 @@ class TestCreateBooking:
         # Создаем максимальное количество записей
         for i in range(MAX_BOOKINGS_PER_USER):
             date_str = (now_local() + timedelta(days=i+1)).strftime("%Y-%m-%d")
-            success, _ = await booking_service.create_booking(
+            success, error_code = await booking_service.create_booking(
                 date_str, f"{10+i}:00", user_id, "testuser"
             )
             assert success is True
+            assert error_code == "success"
         
         # Попытка создать ещё одну
         date_str = (now_local() + timedelta(days=10)).strftime("%Y-%m-%d")
@@ -104,9 +107,38 @@ class TestCreateBooking:
         success_count = sum(1 for success, _ in results if success)
         assert success_count == 1
         
+        # Один должен получить slot_taken
+        error_codes = [code for success, code in results if not success]
+        assert "slot_taken" in error_codes
+        
         # Проверяем что в БД только одна запись
         slot_free = await Database.is_slot_free(tomorrow, time_str)
         assert slot_free is False
+    
+    @pytest.mark.asyncio
+    async def test_create_booking_all_error_codes(self, booking_service, setup_database):
+        """Тест всех возможных кодов ошибок"""
+        tomorrow = (now_local() + timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        # 1. Success
+        success, code = await booking_service.create_booking(tomorrow, "10:00", 111, "user1")
+        assert success is True
+        assert code == "success"
+        
+        # 2. Slot taken
+        success, code = await booking_service.create_booking(tomorrow, "10:00", 222, "user2")
+        assert success is False
+        assert code == "slot_taken"
+        
+        # 3. Limit exceeded
+        for i in range(MAX_BOOKINGS_PER_USER):
+            date = (now_local() + timedelta(days=i+2)).strftime("%Y-%m-%d")
+            await booking_service.create_booking(date, "11:00", 333, "user3")
+        
+        date = (now_local() + timedelta(days=20)).strftime("%Y-%m-%d")
+        success, code = await booking_service.create_booking(date, "12:00", 333, "user3")
+        assert success is False
+        assert code == "limit_exceeded"
 
 
 class TestRescheduleBooking:
@@ -122,10 +154,11 @@ class TestRescheduleBooking:
         new_time = "14:00"
         
         # Создаем запись
-        success, _ = await booking_service.create_booking(
+        success, error_code = await booking_service.create_booking(
             old_date, old_time, user_id, "testuser"
         )
         assert success is True
+        assert error_code == "success"
         
         # Получаем ID записи
         bookings = await Database.get_user_bookings(user_id)
@@ -154,7 +187,7 @@ class TestRescheduleBooking:
     
     @pytest.mark.asyncio
     async def test_reschedule_to_taken_slot(self, booking_service, setup_database):
-        """Попытка перенести на занятый слот"""
+        """❗ КРИТИЧЕСКИЙ ТЕСТ: Попытка перенести на занятый слот"""
         user_id = 12345
         old_date = (now_local() + timedelta(days=1)).strftime("%Y-%m-%d")
         old_time = "10:00"
@@ -175,11 +208,15 @@ class TestRescheduleBooking:
         
         assert success is False
         
-        # КРИТИЧЕСКИЙ ТЕСТ: старая запись НЕ должна быть удалена!
+        # ✅ КРИТИЧЕСКАЯ ПРОВЕРКА: старая запись НЕ должна быть удалена!
         bookings = await Database.get_user_bookings(user_id)
-        assert len(bookings) == 1
-        assert bookings[0][1] == old_date  # Запись осталась на старой дате
-        assert bookings[0][2] == old_time
+        assert len(bookings) == 1, "Запись пользователя была потеряна!"
+        assert bookings[0][1] == old_date, "Дата изменилась при неудачном переносе"
+        assert bookings[0][2] == old_time, "Время изменилось при неудачном переносе"
+        
+        # Проверяем что обе записи на месте
+        bookings_other = await Database.get_user_bookings(67890)
+        assert len(bookings_other) == 1, "Запись другого пользователя была удалена"
     
     @pytest.mark.asyncio
     async def test_reschedule_nonexistent_booking(self, booking_service, setup_database):
@@ -195,6 +232,31 @@ class TestRescheduleBooking:
         )
         
         assert success is False
+    
+    @pytest.mark.asyncio
+    async def test_reschedule_wrong_user(self, booking_service, setup_database):
+        """Попытка перенести чужую запись"""
+        user1_id = 111
+        user2_id = 222
+        date_str = (now_local() + timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        # Пользователь 1 создает запись
+        await booking_service.create_booking(date_str, "10:00", user1_id, "user1")
+        bookings = await Database.get_user_bookings(user1_id)
+        booking_id = bookings[0][0]
+        
+        # Пользователь 2 пытается перенести чужую запись
+        new_date = (now_local() + timedelta(days=2)).strftime("%Y-%m-%d")
+        success = await booking_service.reschedule_booking(
+            booking_id, date_str, "10:00", new_date, "11:00", user2_id, "user2"
+        )
+        
+        assert success is False
+        
+        # Запись пользователя 1 должна остаться без изменений
+        bookings = await Database.get_user_bookings(user1_id)
+        assert len(bookings) == 1
+        assert bookings[0][1] == date_str
 
 
 class TestCancelBooking:
@@ -241,8 +303,8 @@ class TestAtomicity:
     """Тесты атомарности операций"""
     
     @pytest.mark.asyncio
-    async def test_reschedule_atomicity(self, booking_service, setup_database):
-        """Тест атомарности переноса - используется UPDATE вместо DELETE+INSERT"""
+    async def test_reschedule_atomicity_uses_update(self, booking_service, setup_database):
+        """✅ КРИТИЧЕСКИЙ ТЕСТ: Перенос использует UPDATE вместо DELETE+INSERT"""
         user_id = 12345
         old_date = (now_local() + timedelta(days=1)).strftime("%Y-%m-%d")
         old_time = "10:00"
@@ -255,14 +317,45 @@ class TestAtomicity:
         original_booking_id = bookings[0][0]
         
         # Переносим
-        await booking_service.reschedule_booking(
+        success = await booking_service.reschedule_booking(
             original_booking_id, old_date, old_time, new_date, new_time, user_id, "testuser"
         )
         
-        # Проверяем что ID записи НЕ изменился (это значит использовался UPDATE)
+        assert success is True
+        
+        # ✅ КРИТИЧЕСКАЯ ПРОВЕРКА: ID записи НЕ изменился (используется UPDATE)
         bookings = await Database.get_user_bookings(user_id)
         assert len(bookings) == 1
-        assert bookings[0][0] == original_booking_id  # ID не изменился!
+        assert bookings[0][0] == original_booking_id, "ID изменился - используется DELETE+INSERT вместо UPDATE!"
+    
+    @pytest.mark.asyncio
+    async def test_reschedule_rollback_on_error(self, booking_service, setup_database):
+        """Тест отката транзакции при ошибке переноса"""
+        user_id = 12345
+        old_date = (now_local() + timedelta(days=1)).strftime("%Y-%m-%d")
+        old_time = "10:00"
+        new_date = (now_local() + timedelta(days=2)).strftime("%Y-%m-%d")
+        new_time = "14:00"
+        
+        # Создаем запись
+        await booking_service.create_booking(old_date, old_time, user_id, "testuser")
+        bookings_before = await Database.get_user_bookings(user_id)
+        booking_id = bookings_before[0][0]
+        
+        # Занимаем целевой слот
+        await booking_service.create_booking(new_date, new_time, 67890, "otheruser")
+        
+        # Пытаемся перенести - должен быть откат
+        success = await booking_service.reschedule_booking(
+            booking_id, old_date, old_time, new_date, new_time, user_id, "testuser"
+        )
+        
+        assert success is False
+        
+        # Проверяем что БД в исходном состоянии
+        bookings_after = await Database.get_user_bookings(user_id)
+        assert len(bookings_after) == 1
+        assert bookings_after[0] == bookings_before[0], "Данные изменились после неудачного переноса"
 
 
 class TestDatabaseMethods:
@@ -292,6 +385,25 @@ class TestDatabaseMethods:
         assert result is not None
         assert result[0] == date_str
         assert result[1] == time_str
+    
+    @pytest.mark.asyncio
+    async def test_get_booking_by_id_wrong_user(self, setup_database):
+        """Тест получения чужой записи по ID"""
+        import aiosqlite
+        from config import DATABASE_PATH
+        
+        date_str = (now_local() + timedelta(days=1)).strftime("%Y-%m-%d")
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            cursor = await db.execute(
+                "INSERT INTO bookings (date, time, user_id, username, created_at) VALUES (?, ?, ?, ?, ?)",
+                (date_str, "10:00", 111, "user1", now_local().isoformat())
+            )
+            booking_id = cursor.lastrowid
+            await db.commit()
+        
+        # Попытка получить с другим user_id
+        result = await Database.get_booking_by_id(booking_id, 222)
+        assert result is None
     
     @pytest.mark.asyncio
     async def test_cleanup_old_bookings(self, setup_database):
@@ -329,3 +441,26 @@ class TestDatabaseMethods:
         assert len(users) >= 2
         assert 111 in users
         assert 222 in users
+    
+    @pytest.mark.asyncio
+    async def test_get_week_schedule(self, setup_database):
+        """Тест получения расписания на неделю"""
+        # Создаем несколько записей
+        import aiosqlite
+        from config import DATABASE_PATH
+        
+        today = now_local()
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            for i in range(3):
+                date = (today + timedelta(days=i)).strftime("%Y-%m-%d")
+                await db.execute(
+                    "INSERT INTO bookings (date, time, user_id, username, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (date, f"{10+i}:00", 111, "testuser", today.isoformat())
+                )
+            await db.commit()
+        
+        start_date = today.strftime("%Y-%m-%d")
+        schedule = await Database.get_week_schedule(start_date, days=7)
+        
+        assert len(schedule) >= 3
+        assert all(len(entry) == 3 for entry in schedule)  # (date, time, username)
