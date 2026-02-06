@@ -1,4 +1,5 @@
 """Модели данных"""
+
 from dataclasses import dataclass
 from typing import Optional
 
@@ -6,6 +7,7 @@ from typing import Optional
 @dataclass
 class Booking:
     """Модель записи"""
+
     id: int
     date: str
     time: str
@@ -17,6 +19,7 @@ class Booking:
 @dataclass
 class User:
     """Модель пользователя"""
+
     user_id: int
     first_seen: str
 
@@ -24,6 +27,7 @@ class User:
 @dataclass
 class BlockedSlot:
     """Модель заблокированного слота"""
+
     id: int
     date: str
     time: str
@@ -35,6 +39,7 @@ class BlockedSlot:
 @dataclass
 class ClientStats:
     """Статистика клиента"""
+
     total_bookings: int
     cancelled_bookings: int
     avg_rating: float

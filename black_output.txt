@@ -1,0 +1,20 @@
+error: cannot format /home/runner/work/tg-bot/tg-bot/fix_linting.py: Cannot parse: 49:20: Failed to parse: DedentDoesNotMatchAnyOuterIndent
+reformatted /home/runner/work/tg-bot/tg-bot/database/models.py
+reformatted /home/runner/work/tg-bot/tg-bot/config.py
+reformatted /home/runner/work/tg-bot/tg-bot/handlers/user_handlers.py
+reformatted /home/runner/work/tg-bot/tg-bot/keyboards/admin_keyboards.py
+reformatted /home/runner/work/tg-bot/tg-bot/handlers/admin_handlers.py
+reformatted /home/runner/work/tg-bot/tg-bot/main.py
+reformatted /home/runner/work/tg-bot/tg-bot/keyboards/user_keyboards.py
+reformatted /home/runner/work/tg-bot/tg-bot/services/analytics_service.py
+reformatted /home/runner/work/tg-bot/tg-bot/database/queries.py
+reformatted /home/runner/work/tg-bot/tg-bot/services/notification_service.py
+reformatted /home/runner/work/tg-bot/tg-bot/tests/conftest.py
+reformatted /home/runner/work/tg-bot/tg-bot/utils/helpers.py
+reformatted /home/runner/work/tg-bot/tg-bot/utils/states.py
+reformatted /home/runner/work/tg-bot/tg-bot/handlers/booking_handlers.py
+reformatted /home/runner/work/tg-bot/tg-bot/services/booking_service.py
+reformatted /home/runner/work/tg-bot/tg-bot/tests/test_booking_service.py
+
+Oh no! 💥 💔 💥
+16 files reformatted, 6 files left unchanged, 1 file failed to reformat.

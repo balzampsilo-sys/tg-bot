@@ -1,13 +1,21 @@
 """Обработчики пользовательских команд"""
-import asyncio
-from aiogram import Router, F
-from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery
-from aiogram.fsm.context import FSMContext
 
+import asyncio
+
+from aiogram import F, Router
+from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, Message
+
+from config import (
+    CANCELLATION_HOURS,
+    MAX_BOOKINGS_PER_USER,
+    SERVICE_DURATION,
+    SERVICE_LOCATION,
+    SERVICE_PRICE,
+)
 from database.queries import Database
 from keyboards.user_keyboards import MAIN_MENU, create_onboarding_keyboard
-from config import SERVICE_DURATION, SERVICE_PRICE, SERVICE_LOCATION, CANCELLATION_HOURS, MAX_BOOKINGS_PER_USER
 
 router = Router()
 
@@ -18,17 +26,17 @@ async def start_cmd(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
     is_new = await Database.is_new_user(user_id)
-    
+
     if is_new:
         await Database.log_event(user_id, "user_registered")
-        
+
         # Приветствие
         await message.answer(
             "👋 Добро пожаловать в систему онлайн-записи!\n\n"
             "🎯 Записаться на удобное время — всего 3 клика"
         )
         await asyncio.sleep(1)
-        
+
         # Преимущества
         await message.answer(
             "✨ ЧТО Я УМЕЮ:\n\n"
@@ -42,27 +50,26 @@ async def start_cmd(message: Message, state: FSMContext):
             f"📍 Место: {SERVICE_LOCATION}"
         )
         await asyncio.sleep(1)
-        
+
         # Интерактивный выбор
         await message.answer(
             "Хотите быстрый обзор или сразу запишемся?",
-            reply_markup=create_onboarding_keyboard()
+            reply_markup=create_onboarding_keyboard(),
         )
     else:
         # Для вернувшихся
         stats = await Database.get_client_stats(user_id)
         if stats.total_bookings >= 5:
             await message.answer(
-                f"С возвращением! 🎉\n\n"
+                "С возвращением! 🎉\n\n"
                 f"Вы уже {stats.total_bookings} раз с нами.\n"
                 f"Средний рейтинг ваших отзывов: {stats.avg_rating:.1f}⭐\n\n"
-                f"Спасибо за доверие!",
-                reply_markup=MAIN_MENU
+                "Спасибо за доверие!",
+                reply_markup=MAIN_MENU,
             )
         else:
             await message.answer(
-                "С возвращением! 👋\n\nВыберите действие:",
-                reply_markup=MAIN_MENU
+                "С возвращением! 👋\n\nВыберите действие:", reply_markup=MAIN_MENU
             )
 
 
@@ -83,10 +90,7 @@ async def onboarding_tour(callback: CallbackQuery, state: FSMContext):
         "💡 Можно иметь до 3 записей одновременно"
     )
     await asyncio.sleep(4)
-    await callback.message.answer(
-        "Всё понятно? Попробуем! 🚀",
-        reply_markup=MAIN_MENU
-    )
+    await callback.message.answer("Всё понятно? Попробуем! 🚀", reply_markup=MAIN_MENU)
     await callback.answer()
 
 
@@ -95,10 +99,7 @@ async def skip_onboarding(callback: CallbackQuery, state: FSMContext):
     """Пропуск онбординга"""
     await state.clear()
     await callback.message.edit_text("Отлично! Давайте запишем вас 📅")
-    await callback.message.answer(
-        "Выберите действие:",
-        reply_markup=MAIN_MENU
-    )
+    await callback.message.answer("Выберите действие:", reply_markup=MAIN_MENU)
     await callback.answer()
 
 
@@ -113,7 +114,7 @@ async def about_service(message: Message):
         f"🔔 Напоминание за {CANCELLATION_HOURS}ч до встречи\n"
         f"❌ Отмена возможна за {CANCELLATION_HOURS}ч\n"
         f"📊 Лимит одновременных записей: {MAX_BOOKINGS_PER_USER}",
-        reply_markup=MAIN_MENU
+        reply_markup=MAIN_MENU,
     )
 
 
