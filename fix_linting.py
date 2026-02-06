@@ -26,14 +26,12 @@ def fix_blank_line_whitespace(content: str) -> str:
 
 def fix_bare_except(content: str) -> str:
     """Исправляет bare except (E722)"""
-    # Заменяем 'except Exception:' на 'except Exception:'
     content = re.sub(r'except\s*:', 'except Exception:', content)
     return content
 
 
 def fix_f_string_placeholders(content: str) -> str:
     """Исправляет f-strings без placeholders (F541)"""
-    # Находим f-strings без {} и заменяем на обычные строки
     content = re.sub(r'f(["\'])([^{}\1]*?)\1', r'\1\2\1', content)
     return content
 
@@ -44,8 +42,9 @@ def fix_unused_imports(content: str) -> str:
     fixed_lines = []
 
     for line in lines:
-        # Пропускаем импорты database.models.Booking
+        if 'from database.models import Booking' in line:
             continue
+        if 'import Booking' in line and 'database.models' in line:
             continue
         fixed_lines.append(line)
 
@@ -54,8 +53,6 @@ def fix_unused_imports(content: str) -> str:
 
 def fix_long_lines(content: str, max_length: int = 127) -> str:
     """Исправляет длинные строки (E501) - базовая версия"""
-    # Эта функция только для комментариев и строк
-    # Для кода лучше использовать black
     lines = content.split('\n')
     fixed_lines = []
 
@@ -63,9 +60,7 @@ def fix_long_lines(content: str, max_length: int = 127) -> str:
         if len(line) <= max_length:
             fixed_lines.append(line)
         else:
-            # Если это комментарий
             if line.strip().startswith('#'):
-                # Разбиваем комментарий
                 indent = len(line) - len(line.lstrip())
                 words = line.strip()[1:].split()
                 current_line = ' ' * indent + '#'
@@ -80,8 +75,6 @@ def fix_long_lines(content: str, max_length: int = 127) -> str:
                 if current_line.strip() != '#':
                     fixed_lines.append(current_line)
             else:
-                # Для остальных случаев оставляем как есть
-                # (black лучше справится)
                 fixed_lines.append(line)
 
     return '\n'.join(fixed_lines)
@@ -95,13 +88,11 @@ def fix_file(filepath: Path) -> bool:
 
         original_content = content
 
-        # Применяем исправления
         content = fix_trailing_whitespace(content)
         content = fix_blank_line_whitespace(content)
         content = fix_bare_except(content)
         content = fix_f_string_placeholders(content)
         content = fix_unused_imports(content)
-        # content = fix_long_lines(content)  # Закомментировано - лучше использовать black
 
         if content != original_content:
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -121,10 +112,8 @@ def main():
     """Главная функция"""
     print("🔧 Fixing linting errors...\n")
 
-    # Находим все Python файлы
     python_files = []
     for root, dirs, files in os.walk('.'):
-        # Пропускаем venv, __pycache__, .git
         dirs[:] = [d for d in dirs if d not in ['venv', '__pycache__', '.git', 'htmlcov', '.pytest_cache']]
 
         for file in files:

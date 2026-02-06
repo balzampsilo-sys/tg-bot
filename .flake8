@@ -1,0 +1,22 @@
+[flake8]
+max-line-length = 127
+exclude =
+    venv,
+    __pycache__,
+    .git,
+    htmlcov,
+    .pytest_cache,
+    .eggs,
+    *.egg
+
+# F821: undefined name - игнорируем для dataclassов
+# F401: imported but unused - автоматически исправляется
+per-file-ignores =
+    __init__.py:F401
+    database/queries.py:F821
+
+# Игнорировать определенные ошибки глобально
+ignore =
+    E203,  # whitespace before ':' (black конфликт)
+    W503,  # line break before binary operator
+    E501   # line too long (black обработает)
