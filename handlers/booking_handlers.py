@@ -94,7 +94,7 @@ async def select_day(callback: CallbackQuery, state: FSMContext):
     except (ValueError, IndexError) as e:
         await callback.answer("❌ Ошибка: неверная дата", show_alert=True)
         logging.error(f"Invalid date in select_day: {callback.data}, error: {e}")
-        await state.clear()  # Добавлен cleanup
+        await state.clear()
         return
     
     await callback.answer("⏳ Загружаю слоты...")
@@ -105,11 +105,11 @@ async def select_day(callback: CallbackQuery, state: FSMContext):
     except Exception as e:
         logging.error(f"Error editing message in select_day: {e}")
         await callback.answer("❌ Ошибка отображения")
-        await state.clear()  # Добавлен cleanup
+        await state.clear()
 
 
 @router.callback_query(F.data.startswith("time:"))
-async def confirm_time(callback: CallbackQuery):
+async def confirm_time(callback: CallbackQuery, state: FSMContext):
     """Подтверждение времени с улучшенной валидацией"""
     # ВАЛИДАЦИЯ
     try:
@@ -136,6 +136,7 @@ async def confirm_time(callback: CallbackQuery):
     except (ValueError, IndexError) as e:
         await callback.answer("❌ Ошибка: неверные данные", show_alert=True)
         logging.error(f"Invalid callback_data in confirm_time: {callback.data}, error: {e}")
+        await state.clear()
         return
     
     day_name = DAY_NAMES[date_obj.weekday()]
@@ -168,7 +169,7 @@ async def cancel_booking_flow(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("confirm:"))
 async def book_time(callback: CallbackQuery, booking_service: BookingService, notification_service: NotificationService):
-    """Финальное бронирование (убрана лишняя проверка)"""
+    """Финальное бронирование с обработкой кодов ошибок"""
     # ВАЛИДАЦИЯ
     try:
         parts = callback.data.split(":", 2)
@@ -186,8 +187,8 @@ async def book_time(callback: CallbackQuery, booking_service: BookingService, no
     user_id = callback.from_user.id
     username = callback.from_user.username or callback.from_user.first_name or "Гость"
     
-    # Проверка can_book убрана - она теперь внутри create_booking!
-    success = await booking_service.create_booking(date_str, time_str, user_id, username)
+    # Проверка can_book внутри create_booking в транзакции!
+    success, error_code = await booking_service.create_booking(date_str, time_str, user_id, username)
     
     if success:
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
@@ -210,11 +211,22 @@ async def book_time(callback: CallbackQuery, booking_service: BookingService, no
         except Exception as e:
             logging.error(f"Failed to notify admin: {e}")
     else:
-        await callback.answer("❌ Этот слот уже занят!", show_alert=True)
+        # Обработка различных ошибок
+        if error_code == "limit_exceeded":
+            await callback.answer(
+                f"⚠️ У вас уже {MAX_BOOKINGS_PER_USER} активных записи",
+                show_alert=True
+            )
+        elif error_code == "slot_taken":
+            await callback.answer("❌ Этот слот уже занят!", show_alert=True)
+        else:
+            await callback.answer("❌ Ошибка создания записи", show_alert=True)
+        
+        # Показываем слоты снова
         try:
             text, kb = await create_time_slots(date_str)
             await callback.message.edit_text(
-                f"❌ Слот {time_str} уже занят!\n\nВыберите другое время:",
+                f"❌ Не удалось записать\n\nВыберите другое время:",
                 reply_markup=kb
             )
         except Exception as e:
@@ -241,7 +253,7 @@ async def back_calendar(callback: CallbackQuery, state: FSMContext):
 
 @router.message(F.text == "📋 Мои записи")
 async def my_bookings(message: Message):
-    """Список записей пользователя (исправлен timezone)"""
+    """Список записей пользователя"""
     user_id = message.from_user.id
     bookings = await Database.get_user_bookings(user_id)
     
@@ -255,7 +267,6 @@ async def my_bookings(message: Message):
     
     for i, (booking_id, date_str, time_str, username, created_at) in enumerate(bookings, 1):
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-        # Исправлено: правильное создание datetime с timezone
         booking_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
         booking_dt = booking_dt.replace(tzinfo=TIMEZONE)
         
@@ -298,21 +309,14 @@ async def cancel_booking_callback(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка: неверный ID записи", show_alert=True)
         return
     
-    import aiosqlite
-    from config import DATABASE_PATH
-    
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        async with db.execute(
-            "SELECT date, time FROM bookings WHERE id=? AND user_id=?",
-            (booking_id, callback.from_user.id)
-        ) as cursor:
-            result = await cursor.fetchone()
+    # Используем Database API вместо прямого запроса
+    result = await Database.get_booking_by_id(booking_id, callback.from_user.id)
     
     if not result:
         await callback.answer("❌ Запись не найдена", show_alert=True)
         return
     
-    date_str, time_str = result
+    date_str, time_str, _ = result
     can_cancel, hours_until = await Database.can_cancel_booking(date_str, time_str)
     
     if not can_cancel:
@@ -339,9 +343,6 @@ async def cancel_booking_callback(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("cancel_confirm:"))
 async def cancel_confirmed(callback: CallbackQuery, booking_service: BookingService, notification_service: NotificationService):
     """Подтверждённая отмена"""
-    import aiosqlite
-    from config import DATABASE_PATH
-    
     # ВАЛИДАЦИЯ
     try:
         booking_id = int(callback.data.split(":", 1)[1])
@@ -349,18 +350,14 @@ async def cancel_confirmed(callback: CallbackQuery, booking_service: BookingServ
         await callback.answer("❌ Ошибка: неверный ID записи", show_alert=True)
         return
     
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        async with db.execute(
-            "SELECT date, time FROM bookings WHERE id=? AND user_id=?",
-            (booking_id, callback.from_user.id)
-        ) as cursor:
-            result = await cursor.fetchone()
+    # Используем Database API вместо прямого запроса
+    result = await Database.get_booking_by_id(booking_id, callback.from_user.id)
     
     if not result:
         await callback.answer("❌ Запись не найдена", show_alert=True)
         return
     
-    date_str, time_str = result
+    date_str, time_str, _ = result
     success, _ = await booking_service.cancel_booking(date_str, time_str, callback.from_user.id)
     
     if success:
@@ -497,10 +494,7 @@ async def confirm_reschedule_time(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("reschedule_confirm:"))
 async def execute_reschedule(callback: CallbackQuery, state: FSMContext, booking_service: BookingService):
-    """Выполнение переноса"""
-    import aiosqlite
-    from config import DATABASE_PATH
-    
+    """Выполнение переноса через безопасный метод reschedule_booking"""
     try:
         parts = callback.data.split(":", 3)
         booking_id = int(parts[1])
@@ -512,45 +506,32 @@ async def execute_reschedule(callback: CallbackQuery, state: FSMContext, booking
         return
     
     user_id = callback.from_user.id
+    username = callback.from_user.username or callback.from_user.first_name or "Гость"
     
-    # Получаем старую запись
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        async with db.execute(
-            "SELECT date, time FROM bookings WHERE id=? AND user_id=?",
-            (booking_id, user_id)
-        ) as cursor:
-            old_booking = await cursor.fetchone()
+    # Получаем старую запись через Database API
+    old_booking = await Database.get_booking_by_id(booking_id, user_id)
     
     if not old_booking:
         await callback.answer("❌ Запись не найдена", show_alert=True)
         await state.clear()
         return
     
-    old_date_str, old_time_str = old_booking
+    old_date_str, old_time_str, _ = old_booking
     
-    # Проверяем свободен ли новый слот
-    is_free = await Database.is_slot_free(new_date_str, new_time_str)
-    if not is_free:
-        await callback.answer("❌ Этот слот уже занят!", show_alert=True)
-        return
+    # Выполняем перенос через новый безопасный метод
+    success = await booking_service.reschedule_booking(
+        booking_id=booking_id,
+        old_date_str=old_date_str,
+        old_time_str=old_time_str,
+        new_date_str=new_date_str,
+        new_time_str=new_time_str,
+        user_id=user_id,
+        username=username
+    )
     
-    # Выполняем перенос (удаляем старую + создаем новую)
-    username = callback.from_user.username or callback.from_user.first_name or "Гость"
+    await state.clear()
     
-    # Удаляем старую запись
-    success_cancel, _ = await booking_service.cancel_booking(old_date_str, old_time_str, user_id)
-    
-    if not success_cancel:
-        await callback.answer("❌ Ошибка переноса", show_alert=True)
-        await state.clear()
-        return
-    
-    # Создаем новую запись
-    success_create = await booking_service.create_booking(new_date_str, new_time_str, user_id, username)
-    
-    if success_create:
-        await state.clear()
-        
+    if success:
         date_obj = datetime.strptime(new_date_str, "%Y-%m-%d")
         await callback.message.edit_text(
             f"✅ ЗАПИСЬ ПЕРЕНЕСЕНА!\n\n"
@@ -561,12 +542,16 @@ async def execute_reschedule(callback: CallbackQuery, state: FSMContext, booking
             f"⏰ Напоминание за 24 часа"
         )
         await callback.answer("✅ Перенесено!")
-        
-        # Логируем событие
-        await Database.log_event(user_id, "booking_rescheduled", f"{old_date_str} -> {new_date_str}")
     else:
-        await callback.answer("❌ Ошибка создания новой записи", show_alert=True)
-        await state.clear()
+        await callback.answer("❌ Не удалось перенести запись", show_alert=True)
+        # Показываем календарь для повторной попытки
+        today = now_local()
+        kb = await create_month_calendar(today.year, today.month)
+        await callback.message.edit_text(
+            "❌ Слот занят или произошла ошибка\n\n"
+            "Выберите другую дату:",
+            reply_markup=kb
+        )
 
 
 @router.callback_query(F.data == "cancel_reschedule")
@@ -578,3 +563,22 @@ async def cancel_reschedule_flow(callback: CallbackQuery, state: FSMContext):
         "Ваша запись осталась без изменений"
     )
     await callback.answer("Перенос отменен")
+
+
+# === ОБРАБОТЧИКИ ОШИБОК ===
+
+@router.callback_query(F.data == "error")
+async def handle_error_callback(callback: CallbackQuery):
+    """Обработка ошибочных callback"""
+    await callback.answer("⚠️ Произошла ошибка, попробуйте снова", show_alert=True)
+    await callback.message.answer(
+        "Что-то пошло не так. Вернитесь в главное меню:",
+        reply_markup=MAIN_MENU
+    )
+
+
+@router.callback_query()
+async def catch_all_callback(callback: CallbackQuery):
+    """Обработчик для всех необработанных callback"""
+    logging.warning(f"Unhandled callback: {callback.data} from user {callback.from_user.id}")
+    await callback.answer("⚠️ Устаревшая кнопка", show_alert=False)
