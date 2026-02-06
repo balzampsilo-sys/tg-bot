@@ -1,0 +1,5 @@
+.env
+bookings.db
+venv/
+__pycache__/
+*.pyc
