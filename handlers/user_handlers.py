@@ -122,3 +122,14 @@ async def about_service(message: Message):
 async def ignore_callback(callback: CallbackQuery):
     """Игнорирование callback"""
     await callback.answer()
+
+
+# ИСПРАВЛЕНО: Добавлен catch-all обработчик для неизвестных сообщений
+@router.message()
+async def unknown_message(message: Message):
+    """Обработчик неизвестных сообщений"""
+    await message.answer(
+        "🤔 Я не понимаю это сообщение.\n\n"
+        "Используйте кнопки меню 👇",
+        reply_markup=MAIN_MENU
+    )
