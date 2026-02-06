@@ -2,6 +2,7 @@
 
 import calendar
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
@@ -15,6 +16,15 @@ from config import (
     WORK_HOURS_START,
 )
 from utils.helpers import now_local
+
+
+@dataclass
+class ClientStats:
+    """Статистика клиента"""
+    total_bookings: int
+    cancelled_bookings: int
+    avg_rating: float
+    last_booking: Optional[str]
 
 
 class Database:
