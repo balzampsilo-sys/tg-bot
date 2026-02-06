@@ -12,13 +12,19 @@ class AnalyticsService:
     
     @staticmethod
     async def get_dashboard_stats() -> Dict:
-        """Статистика для дашборда"""
+        """Статистика для дашборда (ИСПРАВЛЕНО)"""
+        today_str = now_local().strftime("%Y-%m-%d")
+        
         async with aiosqlite.connect(DATABASE_PATH) as db:
             # Общая статистика
             async with db.execute("SELECT COUNT(*) FROM users") as cursor:
                 total_users = (await cursor.fetchone())[0]
             
-            async with db.execute("SELECT COUNT(*) FROM bookings") as cursor:
+            # ИСПРАВЛЕНИЕ: считаем только будущие записи
+            async with db.execute(
+                "SELECT COUNT(*) FROM bookings WHERE date >= ?",
+                (today_str,)
+            ) as cursor:
                 active_bookings = (await cursor.fetchone())[0]
             
             async with db.execute(
