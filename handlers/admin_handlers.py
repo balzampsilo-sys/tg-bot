@@ -1,11 +1,13 @@
 """Обработчики для администратора"""
 
+import asyncio
 import csv
 import io
 from collections import defaultdict
 from datetime import timedelta
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     BufferedInputFile,
@@ -15,6 +17,7 @@ from aiogram.types import (
     Message,
 )
 
+from config import DAY_NAMES
 from database.queries import Database
 from keyboards.admin_keyboards import ADMIN_MENU
 from keyboards.user_keyboards import MAIN_MENU
@@ -45,6 +48,23 @@ async def exit_admin(message: Message):
         return
 
     await message.answer("👋 Вы вышли из админ-панели", reply_markup=MAIN_MENU)
+
+
+# ИСПРАВЛЕНО: Добавлен глобальный обработчик /cancel
+@router.message(Command("cancel"))
+async def cancel_command(message: Message, state: FSMContext):
+    """Глобальная отмена любого действия"""
+    current_state = await state.get_state()
+    if current_state is None:
+        return
+    
+    await state.clear()
+    
+    # Возвращаем в соответствующее меню в зависимости от прав
+    if is_admin(message.from_user.id):
+        await message.answer("❌ Действие отменено", reply_markup=ADMIN_MENU)
+    else:
+        await message.answer("❌ Действие отменено", reply_markup=MAIN_MENU)
 
 
 @router.message(F.text == "📊 Dashboard")
@@ -114,9 +134,8 @@ async def schedule_view(message: Message):
         bookings = schedule_by_date.get(date_str, [])
 
         if bookings:
-            day_name = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][
-                current_date.weekday()
-            ]
+            # ИСПРАВЛЕНО: Использование DAY_NAMES из config
+            day_name = DAY_NAMES[current_date.weekday()]
             text += f"📆 {current_date.strftime('%d.%m')} ({day_name})\n"
             for time_str, username in bookings:
                 text += f"  🕒 {time_str} - @{username}\n"
@@ -241,7 +260,7 @@ async def broadcast_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AdminStates.awaiting_broadcast_message)
 async def broadcast_execute(message: Message, state: FSMContext):
-    """Выполнение рассылки"""
+    """Выполнение рассылки с rate limiting"""
     if message.text == "/cancel":
         await state.clear()
         await message.answer("❌ Рассылка отменена", reply_markup=ADMIN_MENU)
@@ -257,9 +276,11 @@ async def broadcast_execute(message: Message, state: FSMContext):
     success_count = 0
     fail_count = 0
 
+    # ИСПРАВЛЕНО: Добавлен rate limiting для предотвращения flood
     for user_id in user_ids:
         try:
             await message.bot.send_message(user_id, broadcast_text)
+            await asyncio.sleep(0.05)  # 50ms задержка между сообщениями
             success_count += 1
         except Exception:
             fail_count += 1
