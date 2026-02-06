@@ -327,3 +327,117 @@ class Database:
         except Exception as e:
             logging.error(f"Database error in save_feedback: {e}")
             return False
+    
+    @staticmethod
+    async def get_booking_by_id(booking_id: int, user_id: int) -> Optional[Tuple]:
+        """Получить запись по ID для конкретного пользователя"""
+        try:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                async with db.execute(
+                    "SELECT date, time, username FROM bookings WHERE id=? AND user_id=?",
+                    (booking_id, user_id)
+                ) as cursor:
+                    return await cursor.fetchone()
+        except Exception as e:
+            logging.error(f"Error getting booking {booking_id}: {e}")
+            return None
+    
+    @staticmethod
+    async def delete_booking(booking_id: int, user_id: int) -> bool:
+        """Удалить запись по ID (с проверкой владельца)"""
+        try:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                cursor = await db.execute(
+                    "DELETE FROM bookings WHERE id=? AND user_id=?",
+                    (booking_id, user_id)
+                )
+                await db.commit()
+                deleted = cursor.rowcount > 0
+                
+                if deleted:
+                    logging.info(f"Booking {booking_id} deleted by user {user_id}")
+                else:
+                    logging.warning(f"Booking {booking_id} not found for user {user_id}")
+                
+                return deleted
+        except Exception as e:
+            logging.error(f"Error deleting booking {booking_id}: {e}")
+            return False
+    
+    @staticmethod
+    async def get_all_users() -> List[int]:
+        """Получить список всех user_id"""
+        try:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                async with db.execute("SELECT user_id FROM users") as cursor:
+                    users = await cursor.fetchall()
+                    return [user_id for (user_id,) in users]
+        except Exception as e:
+            logging.error(f"Error getting all users: {e}")
+            return []
+    
+    @staticmethod
+    async def cleanup_old_bookings(before_date: str) -> int:
+        """Удалить записи старше указанной даты"""
+        try:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                cursor = await db.execute(
+                    "DELETE FROM bookings WHERE date < ?",
+                    (before_date,)
+                )
+                await db.commit()
+                deleted_count = cursor.rowcount
+                logging.info(f"Cleaned up {deleted_count} old bookings")
+                return deleted_count
+        except Exception as e:
+            logging.error(f"Error cleaning up old bookings: {e}")
+            return 0
+    
+    @staticmethod
+    async def get_week_schedule(start_date: str, days: int = 7) -> List[Tuple]:
+        """Получить расписание на N дней вперёд"""
+        try:
+            end_date = (datetime.strptime(start_date, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                async with db.execute(
+                    """SELECT date, time, username 
+                    FROM bookings 
+                    WHERE date >= ? AND date <= ?
+                    ORDER BY date, time""",
+                    (start_date, end_date)
+                ) as cursor:
+                    return await cursor.fetchall()
+        except Exception as e:
+            logging.error(f"Error getting week schedule: {e}")
+            return []
+    
+    @staticmethod
+    async def get_top_clients(limit: int = 10) -> List[Tuple]:
+        """Получить топ клиентов по количеству записей"""
+        try:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                async with db.execute(
+                    """SELECT user_id, COUNT(*) as total
+                    FROM analytics 
+                    WHERE event='booking_created'
+                    GROUP BY user_id
+                    ORDER BY total DESC
+                    LIMIT ?""",
+                    (limit,)
+                ) as cursor:
+                    return await cursor.fetchall()
+        except Exception as e:
+            logging.error(f"Error getting top clients: {e}")
+            return []
+    
+    @staticmethod
+    async def get_total_users_count() -> int:
+        """Получить общее количество пользователей"""
+        try:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                async with db.execute("SELECT COUNT(*) FROM users") as cursor:
+                    return (await cursor.fetchone())[0]
+        except Exception as e:
+            logging.error(f"Error getting users count: {e}")
+            return 0
