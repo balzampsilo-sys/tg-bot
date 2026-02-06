@@ -22,7 +22,10 @@ from config import (
     SERVICE_PRICE,
     MAX_BOOKINGS_PER_USER,
     CANCELLATION_HOURS,
-    DAY_NAMES
+    DAY_NAMES,
+    TIMEZONE,
+    WORK_HOURS_START,
+    WORK_HOURS_END
 )
 
 router = Router()
@@ -62,10 +65,6 @@ async def booking_start(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("cal:"))
 async def month_nav(callback: CallbackQuery):
     """Навигация по месяцам"""
-    if callback.data == "ignore":
-        await callback.answer()
-        return
-    
     await callback.answer("⏳ Загружаю...")
     
     _, year_month = callback.data.split(":", 1)
@@ -92,39 +91,53 @@ async def select_day(callback: CallbackQuery, state: FSMContext):
         date_str = callback.data.split(":", 1)[1]
         # Проверяем что дата валидна
         datetime.strptime(date_str, "%Y-%m-%d")
-    except (ValueError, IndexError):
+    except (ValueError, IndexError) as e:
         await callback.answer("❌ Ошибка: неверная дата", show_alert=True)
+        logging.error(f"Invalid date in select_day: {callback.data}, error: {e}")
+        await state.clear()  # Добавлен cleanup
         return
     
     await callback.answer("⏳ Загружаю слоты...")
     
-    text, kb = await create_time_slots(date_str, state)
-    
     try:
+        text, kb = await create_time_slots(date_str, state)
         await callback.message.edit_text(text, reply_markup=kb)
     except Exception as e:
         logging.error(f"Error editing message in select_day: {e}")
         await callback.answer("❌ Ошибка отображения")
+        await state.clear()  # Добавлен cleanup
 
 
 @router.callback_query(F.data.startswith("time:"))
 async def confirm_time(callback: CallbackQuery):
-    """Подтверждение времени"""
+    """Подтверждение времени с улучшенной валидацией"""
     # ВАЛИДАЦИЯ
     try:
         parts = callback.data.split(":", 2)
         if len(parts) != 3:
             raise ValueError("Неверный формат")
         _, date_str, time_str = parts
+        
         # Проверяем формат даты и времени
-        datetime.strptime(date_str, "%Y-%m-%d")
-        datetime.strptime(time_str, "%H:%M")
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        time_obj = datetime.strptime(time_str, "%H:%M")
+        
+        # Проверяем что дата не в прошлом
+        booking_dt = datetime.combine(date_obj.date(), time_obj.time())
+        booking_dt = booking_dt.replace(tzinfo=TIMEZONE)
+        if booking_dt < now_local():
+            raise ValueError("Дата в прошлом")
+        
+        # Проверяем рабочие часы
+        hour = time_obj.hour
+        if not (WORK_HOURS_START <= hour < WORK_HOURS_END):
+            raise ValueError(f"Время вне рабочих часов ({WORK_HOURS_START}-{WORK_HOURS_END})")
+            
     except (ValueError, IndexError) as e:
         await callback.answer("❌ Ошибка: неверные данные", show_alert=True)
         logging.error(f"Invalid callback_data in confirm_time: {callback.data}, error: {e}")
         return
     
-    date_obj = datetime.strptime(date_str, "%Y-%m-%d")
     day_name = DAY_NAMES[date_obj.weekday()]
     
     confirm_kb = create_confirmation_keyboard(date_str, time_str)
@@ -155,7 +168,7 @@ async def cancel_booking_flow(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("confirm:"))
 async def book_time(callback: CallbackQuery, booking_service: BookingService, notification_service: NotificationService):
-    """Финальное бронирование"""
+    """Финальное бронирование (убрана лишняя проверка)"""
     # ВАЛИДАЦИЯ
     try:
         parts = callback.data.split(":", 2)
@@ -173,11 +186,7 @@ async def book_time(callback: CallbackQuery, booking_service: BookingService, no
     user_id = callback.from_user.id
     username = callback.from_user.username or callback.from_user.first_name or "Гость"
     
-    can_book, _ = await Database.can_user_book(user_id)
-    if not can_book:
-        await callback.answer(f"❌ У вас уже {MAX_BOOKINGS_PER_USER} активных записи!", show_alert=True)
-        return
-    
+    # Проверка can_book убрана - она теперь внутри create_booking!
     success = await booking_service.create_booking(date_str, time_str, user_id, username)
     
     if success:
@@ -202,11 +211,14 @@ async def book_time(callback: CallbackQuery, booking_service: BookingService, no
             logging.error(f"Failed to notify admin: {e}")
     else:
         await callback.answer("❌ Этот слот уже занят!", show_alert=True)
-        text, kb = await create_time_slots(date_str)
-        await callback.message.edit_text(
-            f"❌ Слот {time_str} уже занят!\n\nВыберите другое время:",
-            reply_markup=kb
-        )
+        try:
+            text, kb = await create_time_slots(date_str)
+            await callback.message.edit_text(
+                f"❌ Слот {time_str} уже занят!\n\nВыберите другое время:",
+                reply_markup=kb
+            )
+        except Exception as e:
+            logging.error(f"Error showing time slots after failed booking: {e}")
 
 
 @router.callback_query(F.data == "back_calendar")
@@ -229,7 +241,7 @@ async def back_calendar(callback: CallbackQuery, state: FSMContext):
 
 @router.message(F.text == "📋 Мои записи")
 async def my_bookings(message: Message):
-    """Список записей пользователя"""
+    """Список записей пользователя (исправлен timezone)"""
     user_id = message.from_user.id
     bookings = await Database.get_user_bookings(user_id)
     
@@ -243,8 +255,9 @@ async def my_bookings(message: Message):
     
     for i, (booking_id, date_str, time_str, username, created_at) in enumerate(bookings, 1):
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        # Исправлено: правильное создание datetime с timezone
         booking_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-        booking_dt = booking_dt.replace(tzinfo=now.tzinfo)
+        booking_dt = booking_dt.replace(tzinfo=TIMEZONE)
         
         days_left = (booking_dt.date() - now.date()).days
         day_name = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'][date_obj.weekday()]
@@ -379,7 +392,7 @@ async def cancel_decline(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("feedback:"))
 async def save_feedback(callback: CallbackQuery):
-    """Сохранение отзыва"""
+    """Сохранение отзыва с проверкой результата"""
     # ВАЛИДАЦИЯ
     try:
         parts = callback.data.split(":")
@@ -399,15 +412,19 @@ async def save_feedback(callback: CallbackQuery):
     
     user_id = callback.from_user.id
     
-    await Database.save_feedback(user_id, booking_id, rating)
-    await Database.log_event(user_id, "feedback_given", str(rating))
+    # Используем возвращаемое значение
+    success = await Database.save_feedback(user_id, booking_id, rating)
     
-    await callback.message.edit_text(
-        f"💚 Спасибо за отзыв!\n\n"
-        f"Ваша оценка: {'⭐' * rating}\n\n"
-        f"Будем рады видеть вас снова! 😊"
-    )
-    await callback.answer("✅ Отзыв сохранен")
+    if success:
+        await Database.log_event(user_id, "feedback_given", str(rating))
+        await callback.message.edit_text(
+            f"💚 Спасибо за отзыв!\n\n"
+            f"Ваша оценка: {'⭐' * rating}\n\n"
+            f"Будем рады видеть вас снова! 😊"
+        )
+        await callback.answer("✅ Отзыв сохранен")
+    else:
+        await callback.answer("❌ Ошибка сохранения отзыва", show_alert=True)
 
 
 # === ФУНКЦИИ ПЕРЕНОСА ЗАПИСЕЙ ===
@@ -452,6 +469,7 @@ async def confirm_reschedule_time(callback: CallbackQuery, state: FSMContext):
     
     if not booking_id:
         await callback.answer("❌ Ошибка: данные потеряны", show_alert=True)
+        await state.clear()
         return
     
     date_obj = datetime.strptime(date_str, "%Y-%m-%d")
@@ -490,6 +508,7 @@ async def execute_reschedule(callback: CallbackQuery, state: FSMContext, booking
         new_time_str = parts[3]
     except (ValueError, IndexError):
         await callback.answer("❌ Ошибка данных", show_alert=True)
+        await state.clear()
         return
     
     user_id = callback.from_user.id
