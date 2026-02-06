@@ -1,7 +1,8 @@
 """Обработчики бронирования"""
+import logging
 from datetime import datetime
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 
 from database.queries import Database
@@ -78,38 +79,67 @@ async def month_nav(callback: CallbackQuery):
             "🟢🟡🔴⚫ — статус дня",
             reply_markup=kb
         )
-    except:
+    except Exception as e:
+        logging.error(f"Error editing message in month_nav: {e}")
         await callback.message.edit_reply_markup(reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("day:"))
 async def select_day(callback: CallbackQuery, state: FSMContext):
     """Выбор дня"""
+    # ВАЛИДАЦИЯ
+    try:
+        date_str = callback.data.split(":", 1)[1]
+        # Проверяем что дата валидна
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except (ValueError, IndexError):
+        await callback.answer("❌ Ошибка: неверная дата", show_alert=True)
+        return
+    
     await callback.answer("⏳ Загружаю слоты...")
     
-    date_str = callback.data.split(":", 1)[1]
     text, kb = await create_time_slots(date_str, state)
     
-    await callback.message.edit_text(text, reply_markup=kb)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception as e:
+        logging.error(f"Error editing message in select_day: {e}")
+        await callback.answer("❌ Ошибка отображения")
 
 
 @router.callback_query(F.data.startswith("time:"))
 async def confirm_time(callback: CallbackQuery):
     """Подтверждение времени"""
-    _, date_str, time_str = callback.data.split(":", 2)
+    # ВАЛИДАЦИЯ
+    try:
+        parts = callback.data.split(":", 2)
+        if len(parts) != 3:
+            raise ValueError("Неверный формат")
+        _, date_str, time_str = parts
+        # Проверяем формат даты и времени
+        datetime.strptime(date_str, "%Y-%m-%d")
+        datetime.strptime(time_str, "%H:%M")
+    except (ValueError, IndexError) as e:
+        await callback.answer("❌ Ошибка: неверные данные", show_alert=True)
+        logging.error(f"Invalid callback_data in confirm_time: {callback.data}, error: {e}")
+        return
     
     date_obj = datetime.strptime(date_str, "%Y-%m-%d")
     day_name = DAY_NAMES[date_obj.weekday()]
     
     confirm_kb = create_confirmation_keyboard(date_str, time_str)
     
-    await callback.message.edit_text(
-        f"📍 ШАГ 3 из 3: Подтверждение\n\n"
-        f"📅 {date_obj.strftime('%d.%m.%Y')} ({day_name})\n"
-        f"🕒 {time_str}\n\n"
-        f"✅ Подтвердить?",
-        reply_markup=confirm_kb
-    )
+    try:
+        await callback.message.edit_text(
+            f"📍 ШАГ 3 из 3: Подтверждение\n\n"
+            f"📅 {date_obj.strftime('%d.%m.%Y')} ({day_name})\n"
+            f"🕒 {time_str}\n\n"
+            f"✅ Подтвердить?",
+            reply_markup=confirm_kb
+        )
+    except Exception as e:
+        logging.error(f"Error editing message in confirm_time: {e}")
+        await callback.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data == "cancel_booking_flow")
@@ -126,7 +156,19 @@ async def cancel_booking_flow(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("confirm:"))
 async def book_time(callback: CallbackQuery, booking_service: BookingService, notification_service: NotificationService):
     """Финальное бронирование"""
-    _, date_str, time_str = callback.data.split(":", 2)
+    # ВАЛИДАЦИЯ
+    try:
+        parts = callback.data.split(":", 2)
+        if len(parts) != 3:
+            raise ValueError("Неверный формат")
+        _, date_str, time_str = parts
+        # Проверяем форматы
+        datetime.strptime(date_str, "%Y-%m-%d")
+        datetime.strptime(time_str, "%H:%M")
+    except (ValueError, IndexError) as e:
+        await callback.answer("❌ Ошибка: неверные данные", show_alert=True)
+        logging.error(f"Invalid callback_data in book_time: {callback.data}, error: {e}")
+        return
     
     user_id = callback.from_user.id
     username = callback.from_user.username or callback.from_user.first_name or "Гость"
@@ -154,7 +196,10 @@ async def book_time(callback: CallbackQuery, booking_service: BookingService, no
         await callback.answer("✅ Запись создана!", show_alert=False)
         
         # Уведомить админа
-        await notification_service.notify_admin_new_booking(date_str, time_str, user_id, username)
+        try:
+            await notification_service.notify_admin_new_booking(date_str, time_str, user_id, username)
+        except Exception as e:
+            logging.error(f"Failed to notify admin: {e}")
     else:
         await callback.answer("❌ Этот слот уже занят!", show_alert=True)
         text, kb = await create_time_slots(date_str)
@@ -213,15 +258,17 @@ async def my_bookings(message: Message):
         else:
             text += f" — через {days_left} дн.\n"
         
-        from aiogram.types import InlineKeyboardButton
         keyboard.append([
             InlineKeyboardButton(
-                text=f"❌ Отменить запись #{i}",
+                text=f"❌ Отменить #{i}",
                 callback_data=f"cancel:{booking_id}"
+            ),
+            InlineKeyboardButton(
+                text=f"🔄 Перенести #{i}",
+                callback_data=f"reschedule:{booking_id}"
             )
         ])
     
-    from aiogram.types import InlineKeyboardMarkup
     kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
     await message.answer(text, reply_markup=kb)
 
@@ -231,7 +278,12 @@ async def cancel_booking_callback(callback: CallbackQuery, state: FSMContext):
     """Запрос подтверждения отмены"""
     await state.clear()
     
-    booking_id = int(callback.data.split(":", 1)[1])
+    # ВАЛИДАЦИЯ
+    try:
+        booking_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Ошибка: неверный ID записи", show_alert=True)
+        return
     
     import aiosqlite
     from config import DATABASE_PATH
@@ -272,12 +324,17 @@ async def cancel_booking_callback(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("cancel_confirm:"))
-async def cancel_confirmed(callback: CallbackQuery, booking_service: BookingService):
+async def cancel_confirmed(callback: CallbackQuery, booking_service: BookingService, notification_service: NotificationService):
     """Подтверждённая отмена"""
     import aiosqlite
     from config import DATABASE_PATH
     
-    booking_id = int(callback.data.split(":", 1)[1])
+    # ВАЛИДАЦИЯ
+    try:
+        booking_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Ошибка: неверный ID записи", show_alert=True)
+        return
     
     async with aiosqlite.connect(DATABASE_PATH) as db:
         async with db.execute(
@@ -301,6 +358,12 @@ async def cancel_confirmed(callback: CallbackQuery, booking_service: BookingServ
             f"Вы можете записаться снова в любое время"
         )
         await callback.answer("✅ Отменено")
+        
+        # Уведомить админа об отмене
+        try:
+            await notification_service.notify_admin_cancellation(date_str, time_str, callback.from_user.id)
+        except Exception as e:
+            logging.error(f"Failed to notify admin about cancellation: {e}")
     else:
         await callback.answer("❌ Ошибка отмены", show_alert=True)
 
@@ -317,15 +380,182 @@ async def cancel_decline(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("feedback:"))
 async def save_feedback(callback: CallbackQuery):
     """Сохранение отзыва"""
-    _, booking_id, rating = callback.data.split(":")
+    # ВАЛИДАЦИЯ
+    try:
+        parts = callback.data.split(":")
+        if len(parts) != 3:
+            raise ValueError("Неверный формат")
+        _, booking_id, rating = parts
+        booking_id = int(booking_id)
+        rating = int(rating)
+        
+        # Проверяем диапазон рейтинга
+        if not (1 <= rating <= 5):
+            raise ValueError("Рейтинг вне диапазона")
+    except (ValueError, IndexError) as e:
+        await callback.answer("❌ Ошибка: неверные данные", show_alert=True)
+        logging.error(f"Invalid callback_data in save_feedback: {callback.data}, error: {e}")
+        return
+    
     user_id = callback.from_user.id
     
-    await Database.save_feedback(user_id, int(booking_id), int(rating))
-    await Database.log_event(user_id, "feedback_given", rating)
+    await Database.save_feedback(user_id, booking_id, rating)
+    await Database.log_event(user_id, "feedback_given", str(rating))
     
     await callback.message.edit_text(
         f"💚 Спасибо за отзыв!\n\n"
-        f"Ваша оценка: {'⭐' * int(rating)}\n\n"
+        f"Ваша оценка: {'⭐' * rating}\n\n"
         f"Будем рады видеть вас снова! 😊"
     )
     await callback.answer("✅ Отзыв сохранен")
+
+
+# === ФУНКЦИИ ПЕРЕНОСА ЗАПИСЕЙ ===
+
+@router.callback_query(F.data.startswith("reschedule:"))
+async def start_reschedule(callback: CallbackQuery, state: FSMContext):
+    """Начало переноса записи"""
+    try:
+        booking_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Ошибка данных", show_alert=True)
+        return
+    
+    # Сохраняем ID записи для переноса
+    await state.update_data(reschedule_booking_id=booking_id)
+    
+    # Показываем календарь
+    today = now_local()
+    kb = await create_month_calendar(today.year, today.month)
+    
+    await callback.message.edit_text(
+        "📅 ПЕРЕНОС ЗАПИСИ\n\n"
+        "Шаг 1: Выберите НОВУЮ дату\n\n"
+        "🟢🟡🔴 — статус дня",
+        reply_markup=kb
+    )
+    await callback.answer("Выберите новую дату")
+
+
+@router.callback_query(F.data.startswith("reschedule_time:"))
+async def confirm_reschedule_time(callback: CallbackQuery, state: FSMContext):
+    """Подтверждение нового времени при переносе"""
+    try:
+        _, date_str, time_str = callback.data.split(":", 2)
+        datetime.strptime(date_str, "%Y-%m-%d")  # валидация
+    except (ValueError, IndexError):
+        await callback.answer("❌ Ошибка данных", show_alert=True)
+        return
+    
+    data = await state.get_data()
+    booking_id = data.get('reschedule_booking_id')
+    
+    if not booking_id:
+        await callback.answer("❌ Ошибка: данные потеряны", show_alert=True)
+        return
+    
+    date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+    day_name = DAY_NAMES[date_obj.weekday()]
+    
+    # Создаем клавиатуру подтверждения переноса
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="✅ Подтвердить перенос", 
+            callback_data=f"reschedule_confirm:{booking_id}:{date_str}:{time_str}"
+        )],
+        [InlineKeyboardButton(text="🔙 Выбрать другое время", callback_data=f"day:{date_str}")],
+        [InlineKeyboardButton(text="❌ Отменить перенос", callback_data="cancel_reschedule")]
+    ])
+    
+    await callback.message.edit_text(
+        f"📅 ПОДТВЕРЖДЕНИЕ ПЕРЕНОСА\n\n"
+        f"Перенести на:\n"
+        f"📅 {date_obj.strftime('%d.%m.%Y')} ({day_name})\n"
+        f"🕒 {time_str}\n\n"
+        f"Подтвердить?",
+        reply_markup=kb
+    )
+
+
+@router.callback_query(F.data.startswith("reschedule_confirm:"))
+async def execute_reschedule(callback: CallbackQuery, state: FSMContext, booking_service: BookingService):
+    """Выполнение переноса"""
+    import aiosqlite
+    from config import DATABASE_PATH
+    
+    try:
+        parts = callback.data.split(":", 3)
+        booking_id = int(parts[1])
+        new_date_str = parts[2]
+        new_time_str = parts[3]
+    except (ValueError, IndexError):
+        await callback.answer("❌ Ошибка данных", show_alert=True)
+        return
+    
+    user_id = callback.from_user.id
+    
+    # Получаем старую запись
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        async with db.execute(
+            "SELECT date, time FROM bookings WHERE id=? AND user_id=?",
+            (booking_id, user_id)
+        ) as cursor:
+            old_booking = await cursor.fetchone()
+    
+    if not old_booking:
+        await callback.answer("❌ Запись не найдена", show_alert=True)
+        await state.clear()
+        return
+    
+    old_date_str, old_time_str = old_booking
+    
+    # Проверяем свободен ли новый слот
+    is_free = await Database.is_slot_free(new_date_str, new_time_str)
+    if not is_free:
+        await callback.answer("❌ Этот слот уже занят!", show_alert=True)
+        return
+    
+    # Выполняем перенос (удаляем старую + создаем новую)
+    username = callback.from_user.username or callback.from_user.first_name or "Гость"
+    
+    # Удаляем старую запись
+    success_cancel, _ = await booking_service.cancel_booking(old_date_str, old_time_str, user_id)
+    
+    if not success_cancel:
+        await callback.answer("❌ Ошибка переноса", show_alert=True)
+        await state.clear()
+        return
+    
+    # Создаем новую запись
+    success_create = await booking_service.create_booking(new_date_str, new_time_str, user_id, username)
+    
+    if success_create:
+        await state.clear()
+        
+        date_obj = datetime.strptime(new_date_str, "%Y-%m-%d")
+        await callback.message.edit_text(
+            f"✅ ЗАПИСЬ ПЕРЕНЕСЕНА!\n\n"
+            f"Старая дата: {old_date_str} {old_time_str}\n\n"
+            f"Новая дата:\n"
+            f"📅 {date_obj.strftime('%d.%m.%Y')} ({DAY_NAMES[date_obj.weekday()]})\n"
+            f"🕒 {new_time_str}\n\n"
+            f"⏰ Напоминание за 24 часа"
+        )
+        await callback.answer("✅ Перенесено!")
+        
+        # Логируем событие
+        await Database.log_event(user_id, "booking_rescheduled", f"{old_date_str} -> {new_date_str}")
+    else:
+        await callback.answer("❌ Ошибка создания новой записи", show_alert=True)
+        await state.clear()
+
+
+@router.callback_query(F.data == "cancel_reschedule")
+async def cancel_reschedule_flow(callback: CallbackQuery, state: FSMContext):
+    """Отмена процесса переноса"""
+    await state.clear()
+    await callback.message.edit_text(
+        "❌ Перенос отменен\n\n"
+        "Ваша запись осталась без изменений"
+    )
+    await callback.answer("Перенос отменен")
