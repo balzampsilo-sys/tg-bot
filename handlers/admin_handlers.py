@@ -1,7 +1,9 @@
 """Обработчики для администратора"""
+import asyncio
 import aiosqlite
 import csv
 import io
+import logging
 from datetime import timedelta
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
@@ -87,36 +89,48 @@ async def recommendations(message: Message):
 
 @router.message(F.text == "📅 Расписание")
 async def schedule_view(message: Message):
-    """Просмотр расписания на неделю"""
+    """Просмотр расписания на неделю (ОПТИМИЗИРОВАНО)"""
     if not is_admin(message.from_user.id):
         await message.answer("❌ Нет доступа")
         return
     
     today = now_local()
+    end_date = today + timedelta(days=7)
     
-    # Получаем записи на 7 дней вперед
-    text = "📅 РАСПИСАНИЕ НА НЕДЕЛЮ\n\n"
-    
+    # ОПТИМИЗАЦИЯ: один запрос вместо 7
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        for day_offset in range(7):
-            current_date = today + timedelta(days=day_offset)
-            date_str = current_date.strftime("%Y-%m-%d")
-            
-            async with db.execute(
-                "SELECT time, username FROM bookings WHERE date=? ORDER BY time",
-                (date_str,)
-            ) as cursor:
-                bookings = await cursor.fetchall()
-            
-            if bookings:
-                day_name = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'][current_date.weekday()]
-                text += f"📆 {current_date.strftime('%d.%m')} ({day_name})\n"
-                for time_str, username in bookings:
-                    text += f"  🕒 {time_str} - @{username}\n"
-                text += "\n"
+        async with db.execute(
+            """SELECT date, time, username FROM bookings 
+               WHERE date >= ? AND date < ? 
+               ORDER BY date, time""",
+            (today.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+        ) as cursor:
+            all_bookings = await cursor.fetchall()
     
-    if len(text.split("\n")) == 3:  # только заголовок
-        text += "📭 Нет записей на ближайшую неделю"
+    if not all_bookings:
+        await message.answer(
+            "📅 РАСПИСАНИЕ НА НЕДЕЛЮ\n\n📭 Нет записей на ближайшую неделю",
+            reply_markup=ADMIN_MENU
+        )
+        return
+    
+    # Группируем по датам
+    from collections import defaultdict
+    bookings_by_date = defaultdict(list)
+    for date_str, time_str, username in all_bookings:
+        bookings_by_date[date_str].append((time_str, username))
+    
+    text = "📅 РАСПИСАНИЕ НА НЕДЕЛЮ\n\n"
+    for day_offset in range(7):
+        current_date = today + timedelta(days=day_offset)
+        date_str = current_date.strftime("%Y-%m-%d")
+        
+        if date_str in bookings_by_date:
+            day_name = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'][current_date.weekday()]
+            text += f"📆 {current_date.strftime('%d.%m')} ({day_name})\n"
+            for time_str, username in bookings_by_date[date_str]:
+                text += f"  🕒 {time_str} - @{username}\n"
+            text += "\n"
     
     await message.answer(text, reply_markup=ADMIN_MENU)
 
@@ -166,7 +180,7 @@ async def mass_operations(message: Message):
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 Рассылка всем", callback_data="admin_broadcast")],
-        [InlineKeyboardButton(text="🗑 Очистить старые записи", callback_data="admin_cleanup")],
+        [InlineKeyboardButton(text="🗑 Очистить старые записи", callback_data="admin_cleanup_confirm")],
         [InlineKeyboardButton(text="🔒 Заблокировать слоты", callback_data="admin_block_slots")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]
     ])
@@ -235,7 +249,14 @@ async def broadcast_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AdminStates.awaiting_broadcast_message)
 async def broadcast_execute(message: Message, state: FSMContext):
-    """Выполнение рассылки"""
+    """Выполнение рассылки (ИСПРАВЛЕНО: добавлена проверка безопасности)"""
+    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: проверка админа в FSM
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("❌ Нет доступа")
+        logging.warning(f"Попытка несанкционированной рассылки от user_id={message.from_user.id}")
+        return
+    
     if message.text == "/cancel":
         await state.clear()
         await message.answer("❌ Рассылка отменена", reply_markup=ADMIN_MENU)
@@ -243,21 +264,37 @@ async def broadcast_execute(message: Message, state: FSMContext):
     
     broadcast_text = message.text
     
-    # Получаем всех пользователей
+    # ИСПРАВЛЕНИЕ: исключаем админа из списка получателей
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        async with db.execute("SELECT user_id FROM users") as cursor:
+        async with db.execute(
+            "SELECT user_id FROM users WHERE user_id != ?",
+            (ADMIN_ID,)
+        ) as cursor:
             users = await cursor.fetchall()
+    
+    if not users:
+        await state.clear()
+        await message.answer(
+            "⚠️ Нет пользователей для рассылки",
+            reply_markup=ADMIN_MENU
+        )
+        return
     
     await message.answer(f"📤 Начинаю рассылку {len(users)} пользователям...")
     
     success_count = 0
     fail_count = 0
     
+    # ИСПРАВЛЕНИЕ: rate limiting + логирование ошибок
     for (user_id,) in users:
         try:
             await message.bot.send_message(user_id, broadcast_text)
             success_count += 1
-        except Exception:
+            # Rate limiting: 20 сообщений/секунду (защита от бана)
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            # ИСПРАВЛЕНИЕ: логирование конкретных ошибок
+            logging.error(f"Broadcast failed for user {user_id}: {e}")
             fail_count += 1
     
     await state.clear()
@@ -267,11 +304,56 @@ async def broadcast_execute(message: Message, state: FSMContext):
         f"Ошибок: {fail_count}",
         reply_markup=ADMIN_MENU
     )
+    
+    logging.info(f"Broadcast completed by admin. Success: {success_count}, Failed: {fail_count}")
 
 
-@router.callback_query(F.data == "admin_cleanup")
+@router.callback_query(F.data == "admin_cleanup_confirm")
+async def cleanup_confirmation(callback: CallbackQuery):
+    """Подтверждение очистки старых записей"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("❌ Нет доступа", show_alert=True)
+        return
+    
+    today_str = now_local().strftime("%Y-%m-%d")
+    
+    # Подсчитываем количество записей для удаления
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM bookings WHERE date < ?",
+            (today_str,)
+        ) as cursor:
+            count_to_delete = (await cursor.fetchone())[0]
+    
+    if count_to_delete == 0:
+        await callback.message.edit_text(
+            "✅ Нет старых записей для удаления"
+        )
+        await callback.answer("Нет данных для очистки")
+        return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"✅ Да, удалить {count_to_delete} записей",
+            callback_data="admin_cleanup_execute"
+        )],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]
+    ])
+    
+    await callback.message.edit_text(
+        f"⚠️ ПОДТВЕРЖДЕНИЕ ОЧИСТКИ\n\n"
+        f"Будет удалено записей: {count_to_delete}\n"
+        f"Дата: раньше {today_str}\n\n"
+        f"Это действие необратимо!\n\n"
+        f"Продолжить?",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_cleanup_execute")
 async def cleanup_old_bookings(callback: CallbackQuery):
-    """Очистка старых записей"""
+    """Очистка старых записей (ИСПРАВЛЕНО)"""
     if not is_admin(callback.from_user.id):
         await callback.answer("❌ Нет доступа", show_alert=True)
         return
@@ -284,14 +366,16 @@ async def cleanup_old_bookings(callback: CallbackQuery):
             "DELETE FROM bookings WHERE date < ?",
             (today_str,)
         )
-        deleted_count = cursor.rowcount
         await db.commit()
+        # ИСПРАВЛЕНИЕ: правильная обработка rowcount
+        deleted_count = cursor.rowcount if cursor.rowcount >= 0 else 0
     
     await callback.message.edit_text(
         f"✅ Очистка завершена\n\n"
         f"Удалено старых записей: {deleted_count}"
     )
     await callback.answer(f"Удалено: {deleted_count}")
+    logging.info(f"Admin cleanup: deleted {deleted_count} old bookings")
 
 
 @router.callback_query(F.data == "admin_block_slots")
