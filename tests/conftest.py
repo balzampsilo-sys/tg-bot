@@ -1,6 +1,5 @@
 """Конфигурация pytest и общие фикстуры"""
 import pytest
-import asyncio
 import os
 import sys
 from pathlib import Path
@@ -14,14 +13,6 @@ os.environ['BOT_TOKEN'] = 'test_token_123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 os.environ['ADMIN_ID'] = '12345'
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Создаем event loop для всей сессии тестирования"""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
 @pytest.fixture(autouse=True)
 async def cleanup_database():
     """Автоматическая очистка БД после каждого теста"""
@@ -33,11 +24,13 @@ async def cleanup_database():
     
     try:
         async with aiosqlite.connect(DATABASE_PATH) as db:
+            # Очищаем все таблицы
             await db.execute("DELETE FROM bookings")
             await db.execute("DELETE FROM users")
             await db.execute("DELETE FROM analytics")
             await db.execute("DELETE FROM feedback")
             await db.execute("DELETE FROM blocked_slots")
+            await db.execute("DELETE FROM admin_sessions")
             await db.commit()
     except Exception as e:
         print(f"Warning: Failed to cleanup test database: {e}")
@@ -53,9 +46,9 @@ def cleanup_test_db_on_exit():
     if os.path.exists(test_db_path):
         try:
             os.remove(test_db_path)
-            print(f"\nCleaned up test database: {test_db_path}")
+            print(f"\n✅ Cleaned up test database: {test_db_path}")
         except Exception as e:
-            print(f"\nWarning: Could not remove test database: {e}")
+            print(f"\n⚠️  Warning: Could not remove test database: {e}")
 
 
 class MockScheduler:
@@ -65,7 +58,7 @@ class MockScheduler:
         self.jobs = {}
     
     def add_job(self, func, trigger, run_date=None, args=None, id=None, replace_existing=False):
-        """Mock add_job"""
+        """Мок add_job"""
         if id:
             self.jobs[id] = {
                 'func': func,
@@ -73,11 +66,20 @@ class MockScheduler:
                 'run_date': run_date,
                 'args': args
             }
+        return self  # Возвращаем self для совместимости
     
     def remove_job(self, job_id):
-        """Mock remove_job"""
+        """Мок remove_job"""
         if job_id in self.jobs:
             del self.jobs[job_id]
+    
+    def get_job(self, job_id):
+        """Мок get_job"""
+        return self.jobs.get(job_id)
+    
+    def get_jobs(self):
+        """Мок get_jobs"""
+        return list(self.jobs.values())
 
 
 class MockBot:
@@ -85,32 +87,50 @@ class MockBot:
     
     def __init__(self):
         self.sent_messages = []
+        self.sent_documents = []
     
-    async def send_message(self, chat_id, text, reply_markup=None):
-        """Mock send_message"""
-        self.sent_messages.append({
+    async def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
+        """Мок send_message"""
+        message = {
             'chat_id': chat_id,
             'text': text,
-            'reply_markup': reply_markup
-        })
-        return True
+            'reply_markup': reply_markup,
+            'parse_mode': parse_mode
+        }
+        self.sent_messages.append(message)
+        return message
+    
+    async def send_document(self, chat_id, document, caption=None):
+        """Мок send_document"""
+        doc = {
+            'chat_id': chat_id,
+            'document': document,
+            'caption': caption
+        }
+        self.sent_documents.append(doc)
+        return doc
+    
+    def clear_history(self):
+        """Очистить историю сообщений"""
+        self.sent_messages.clear()
+        self.sent_documents.clear()
 
 
 @pytest.fixture
 def mock_scheduler():
-    """Mock scheduler fixture"""
+    """Фикстура mock scheduler"""
     return MockScheduler()
 
 
 @pytest.fixture
 def mock_bot():
-    """Mock bot fixture"""
+    """Фикстура mock bot"""
     return MockBot()
 
 
 # Добавляем маркеры для pytest
 def pytest_configure(config):
-    """Register custom markers"""
+    """Регистрация пользовательских маркеров"""
     config.addinivalue_line(
         "markers", "asyncio: mark test as an async test"
     )
@@ -120,3 +140,10 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: mark test as integration test"
     )
+
+
+def pytest_collection_modifyitems(items):
+    """Автоматическое добавление маркера asyncio к async тестам"""
+    for item in items:
+        if 'asyncio' in item.keywords:
+            item.add_marker(pytest.mark.asyncio)
