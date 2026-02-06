@@ -7,7 +7,7 @@ from typing import Tuple
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import DATABASE_PATH, TIMEZONE
+from config import DATABASE_PATH, TIMEZONE, MAX_BOOKINGS_PER_USER
 from utils.helpers import now_local
 from database.queries import Database
 
@@ -26,17 +26,66 @@ class BookingService:
         user_id: int, 
         username: str
     ) -> bool:
-        """Создание записи с напоминаниями"""
-        try:
-            async with aiosqlite.connect(DATABASE_PATH) as db:
+        """Создание записи с атомарной проверкой"""
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            # Начинаем транзакцию
+            await db.execute("BEGIN IMMEDIATE")
+            
+            try:
+                # Проверяем лимит пользователя
+                async with db.execute(
+                    """SELECT COUNT(*) FROM bookings 
+                    WHERE user_id=? AND date >= date('now')""",
+                    (user_id,)
+                ) as cursor:
+                    count = (await cursor.fetchone())[0]
+                    
+                if count >= MAX_BOOKINGS_PER_USER:
+                    await db.rollback()
+                    logging.warning(f"User {user_id} exceeded booking limit")
+                    return False
+                
+                # Проверяем свободен ли слот
+                async with db.execute(
+                    "SELECT id FROM bookings WHERE date=? AND time=?",
+                    (date_str, time_str)
+                ) as cursor:
+                    existing = await cursor.fetchone()
+                    
+                if existing:
+                    await db.rollback()
+                    logging.info(f"Slot {date_str} {time_str} already taken")
+                    return False
+                
+                # Создаем запись
                 cursor = await db.execute(
-                    "INSERT INTO bookings (date, time, user_id, username, created_at) VALUES (?, ?, ?, ?, ?)",
+                    """INSERT INTO bookings (date, time, user_id, username, created_at) 
+                    VALUES (?, ?, ?, ?, ?)""",
                     (date_str, time_str, user_id, username, now_local().isoformat())
                 )
                 booking_id = cursor.lastrowid
+                
                 await db.commit()
-            
-            # Умная логика напоминаний
+                
+                # Планируем напоминание (вне транзакции)
+                await self._schedule_reminder(booking_id, date_str, time_str, user_id)
+                await Database.log_event(user_id, "booking_created", f"{date_str} {time_str}")
+                
+                logging.info(f"Booking created: {booking_id} for user {user_id}")
+                return True
+                
+            except sqlite3.IntegrityError as e:
+                await db.rollback()
+                logging.warning(f"Integrity error creating booking: {e}")
+                return False
+            except Exception as e:
+                await db.rollback()
+                logging.error(f"Error in create_booking: {e}")
+                return False
+    
+    async def _schedule_reminder(self, booking_id: int, date_str: str, time_str: str, user_id: int):
+        """Планирование напоминаний"""
+        try:
             booking_datetime = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
             booking_datetime = booking_datetime.replace(tzinfo=TIMEZONE)
             now = now_local()
@@ -84,15 +133,8 @@ class BookingService:
                 id=f"feedback_{booking_id}",
                 replace_existing=True
             )
-            
-            await Database.log_event(user_id, "booking_created", f"{date_str} {time_str}")
-            return True
-            
-        except sqlite3.IntegrityError:
-            return False
         except Exception as e:
-            logging.error(f"Error in create_booking: {e}")
-            return False
+            logging.error(f"Error scheduling reminder: {e}")
     
     async def cancel_booking(
         self, 
@@ -101,76 +143,88 @@ class BookingService:
         user_id: int
     ) -> Tuple[bool, int]:
         """Отмена записи"""
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute(
-                "SELECT id FROM bookings WHERE date=? AND time=? AND user_id=?",
-                (date_str, time_str, user_id)
-            ) as cursor:
-                result = await cursor.fetchone()
-                if not result:
-                    return False, 0
-                
-                booking_id = result[0]
-            
-            await db.execute("DELETE FROM bookings WHERE id=?", (booking_id,))
-            await db.commit()
-        
-        # Удаляем напоминания
         try:
-            self.scheduler.remove_job(f"reminder_{booking_id}")
-            self.scheduler.remove_job(f"feedback_{booking_id}")
-        except:
-            pass
-        
-        await Database.log_event(user_id, "booking_cancelled", f"{date_str} {time_str}")
-        return True, booking_id
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                async with db.execute(
+                    "SELECT id FROM bookings WHERE date=? AND time=? AND user_id=?",
+                    (date_str, time_str, user_id)
+                ) as cursor:
+                    result = await cursor.fetchone()
+                    if not result:
+                        return False, 0
+                    
+                    booking_id = result[0]
+                
+                await db.execute("DELETE FROM bookings WHERE id=?", (booking_id,))
+                await db.commit()
+            
+            # Удаляем напоминания
+            try:
+                self.scheduler.remove_job(f"reminder_{booking_id}")
+            except:
+                pass
+            
+            try:
+                self.scheduler.remove_job(f"feedback_{booking_id}")
+            except:
+                pass
+            
+            await Database.log_event(user_id, "booking_cancelled", f"{date_str} {time_str}")
+            logging.info(f"Booking {booking_id} cancelled by user {user_id}")
+            return True, booking_id
+        except Exception as e:
+            logging.error(f"Error cancelling booking: {e}")
+            return False, 0
     
     async def restore_reminders(self):
         """Восстановить напоминания после рестарта"""
-        now = now_local()
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute(
-                "SELECT id, date, time, user_id FROM bookings"
-            ) as cursor:
-                all_bookings = await cursor.fetchall()
-        
-        restored_count = 0
-        for booking_id, date_str, time_str, user_id in all_bookings:
-            booking_datetime = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-            booking_datetime = booking_datetime.replace(tzinfo=TIMEZONE)
+        try:
+            now = now_local()
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                async with db.execute(
+                    "SELECT id, date, time, user_id FROM bookings"
+                ) as cursor:
+                    all_bookings = await cursor.fetchall()
             
-            # Восстановить напоминание
-            reminder_time = booking_datetime - timedelta(hours=24)
-            if reminder_time > now:
-                try:
-                    self.scheduler.add_job(
-                        self._send_reminder,
-                        'date',
-                        run_date=reminder_time,
-                        args=[user_id, date_str, time_str],
-                        id=f"reminder_{booking_id}",
-                        replace_existing=True
-                    )
-                    restored_count += 1
-                except:
-                    pass
+            restored_count = 0
+            for booking_id, date_str, time_str, user_id in all_bookings:
+                booking_datetime = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+                booking_datetime = booking_datetime.replace(tzinfo=TIMEZONE)
+                
+                # Восстановить напоминание
+                reminder_time = booking_datetime - timedelta(hours=24)
+                if reminder_time > now:
+                    try:
+                        self.scheduler.add_job(
+                            self._send_reminder,
+                            'date',
+                            run_date=reminder_time,
+                            args=[user_id, date_str, time_str],
+                            id=f"reminder_{booking_id}",
+                            replace_existing=True
+                        )
+                        restored_count += 1
+                    except Exception as e:
+                        logging.warning(f"Failed to restore reminder for booking {booking_id}: {e}")
+                
+                # Восстановить запрос обратной связи
+                feedback_time = booking_datetime + timedelta(hours=2)
+                if feedback_time > now:
+                    try:
+                        self.scheduler.add_job(
+                            self._send_feedback_request,
+                            'date',
+                            run_date=feedback_time,
+                            args=[user_id, booking_id, date_str, time_str],
+                            id=f"feedback_{booking_id}",
+                            replace_existing=True
+                        )
+                    except Exception as e:
+                        logging.warning(f"Failed to restore feedback request for booking {booking_id}: {e}")
             
-            # Восстановить запрос обратной связи
-            feedback_time = booking_datetime + timedelta(hours=2)
-            if feedback_time > now:
-                try:
-                    self.scheduler.add_job(
-                        self._send_feedback_request,
-                        'date',
-                        run_date=feedback_time,
-                        args=[user_id, booking_id, date_str, time_str],
-                        id=f"feedback_{booking_id}",
-                        replace_existing=True
-                    )
-                except:
-                    pass
-        
-        logging.info(f"Restored {restored_count} reminders")
+            logging.info(f"Restored {restored_count} reminders")
+        except Exception as e:
+            logging.error(f"Error restoring reminders: {e}")
     
     async def _send_reminder(self, user_id: int, date_str: str, time_str: str):
         """Отправка напоминания"""
