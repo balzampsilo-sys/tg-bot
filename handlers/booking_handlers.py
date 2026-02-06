@@ -178,6 +178,7 @@ async def cancel_booking_flow(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("confirm:"))
 async def book_time(
     callback: CallbackQuery,
+    state: FSMContext,
     booking_service: BookingService,
     notification_service: NotificationService,
 ):
@@ -239,9 +240,9 @@ async def book_time(
         else:
             await callback.answer("❌ Ошибка создания записи", show_alert=True)
 
-        # Показываем слоты снова
+        # Показываем слоты снова (ИСПРАВЛЕНО: передаем state)
         try:
-            text, kb = await create_time_slots(date_str)
+            text, kb = await create_time_slots(date_str, state)
             await callback.message.edit_text(
                 "❌ Не удалось записать\n\nВыберите другое время:", reply_markup=kb
             )
@@ -257,14 +258,27 @@ async def back_calendar(callback: CallbackQuery, state: FSMContext):
     today = now_local()
     kb = await create_month_calendar(today.year, today.month)
 
-    can_book, current_count = await Database.can_user_book(callback.from_user.id)
+    # ИСПРАВЛЕНО: Проверка контекста переноса
+    data = await state.get_data()
+    is_rescheduling = data.get("reschedule_booking_id") is not None
 
-    await callback.message.edit_text(
-        "📍 ШАГ 1 из 3: Выберите дату\n\n"
-        "🟢🟡🔴⚫ — статус дня\n\n"
-        f"📊 Ваших записей: {current_count}/{MAX_BOOKINGS_PER_USER}",
-        reply_markup=kb,
-    )
+    if is_rescheduling:
+        # В режиме переноса
+        await callback.message.edit_text(
+            "📅 ПЕРЕНОС ЗАПИСИ\n\n"
+            "Шаг 1: Выберите НОВУЮ дату\n\n"
+            "🟢🟡🔴⚫ — статус дня",
+            reply_markup=kb,
+        )
+    else:
+        # Обычная запись
+        can_book, current_count = await Database.can_user_book(callback.from_user.id)
+        await callback.message.edit_text(
+            "📍 ШАГ 1 из 3: Выберите дату\n\n"
+            "🟢🟡🔴⚫ — статус дня\n\n"
+            f"📊 Ваших записей: {current_count}/{MAX_BOOKINGS_PER_USER}",
+            reply_markup=kb,
+        )
 
 
 @router.message(F.text == "📋 Мои записи")
@@ -289,7 +303,8 @@ async def my_bookings(message: Message):
         booking_dt = booking_dt.replace(tzinfo=TIMEZONE)
 
         days_left = (booking_dt.date() - now.date()).days
-        day_name = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][date_obj.weekday()]
+        # ИСПРАВЛЕНО: Использование DAY_NAMES вместо hardcoded
+        day_name = DAY_NAMES[date_obj.weekday()]
 
         text += f"{i}. 📅 {date_obj.strftime('%d.%m')} ({day_name}) 🕒 {time_str}"
 
@@ -464,6 +479,12 @@ async def start_reschedule(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка данных", show_alert=True)
         return
 
+    # ИСПРАВЛЕНО: Проверка существования записи
+    result = await Database.get_booking_by_id(booking_id, callback.from_user.id)
+    if not result:
+        await callback.answer("❌ Запись не найдена", show_alert=True)
+        return
+
     # Сохраняем ID записи для переноса
     await state.update_data(reschedule_booking_id=booking_id)
 
@@ -622,4 +643,9 @@ async def catch_all_callback(callback: CallbackQuery):
     logging.warning(
         f"Unhandled callback: {callback.data} from user {callback.from_user.id}"
     )
+    # ИСПРАВЛЕНО: Удаление устаревшей клавиатуры
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     await callback.answer("⚠️ Устаревшая кнопка", show_alert=False)
