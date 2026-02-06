@@ -25,8 +25,12 @@ class BookingService:
         time_str: str, 
         user_id: int, 
         username: str
-    ) -> bool:
-        """Создание записи с атомарной проверкой"""
+    ) -> Tuple[bool, str]:
+        """Создание записи с атомарной проверкой
+        
+        Returns:
+            Tuple[bool, str]: (success, error_code)
+        """
         async with aiosqlite.connect(DATABASE_PATH) as db:
             # Начинаем транзакцию
             await db.execute("BEGIN IMMEDIATE")
@@ -43,7 +47,7 @@ class BookingService:
                 if count >= MAX_BOOKINGS_PER_USER:
                     await db.rollback()
                     logging.warning(f"User {user_id} exceeded booking limit")
-                    return False
+                    return False, "limit_exceeded"
                 
                 # Проверяем свободен ли слот
                 async with db.execute(
@@ -55,7 +59,7 @@ class BookingService:
                 if existing:
                     await db.rollback()
                     logging.info(f"Slot {date_str} {time_str} already taken")
-                    return False
+                    return False, "slot_taken"
                 
                 # Создаем запись
                 cursor = await db.execute(
@@ -72,15 +76,91 @@ class BookingService:
                 await Database.log_event(user_id, "booking_created", f"{date_str} {time_str}")
                 
                 logging.info(f"Booking created: {booking_id} for user {user_id}")
-                return True
+                return True, "success"
                 
             except sqlite3.IntegrityError as e:
                 await db.rollback()
                 logging.warning(f"Integrity error creating booking: {e}")
-                return False
+                return False, "integrity_error"
             except Exception as e:
                 await db.rollback()
                 logging.error(f"Error in create_booking: {e}")
+                return False, "unknown_error"
+    
+    async def reschedule_booking(
+        self,
+        booking_id: int,
+        old_date_str: str,
+        old_time_str: str,
+        new_date_str: str,
+        new_time_str: str,
+        user_id: int,
+        username: str
+    ) -> bool:
+        """Перенос записи в одной транзакции"""
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            
+            try:
+                # 1. Проверяем что старая запись существует
+                async with db.execute(
+                    "SELECT id FROM bookings WHERE id=? AND user_id=? AND date=? AND time=?",
+                    (booking_id, user_id, old_date_str, old_time_str)
+                ) as cursor:
+                    old_booking = await cursor.fetchone()
+                
+                if not old_booking:
+                    await db.rollback()
+                    logging.warning(f"Booking {booking_id} not found for user {user_id}")
+                    return False
+                
+                # 2. Проверяем что новый слот свободен
+                async with db.execute(
+                    "SELECT id FROM bookings WHERE date=? AND time=?",
+                    (new_date_str, new_time_str)
+                ) as cursor:
+                    existing = await cursor.fetchone()
+                
+                if existing:
+                    await db.rollback()
+                    logging.info(f"Slot {new_date_str} {new_time_str} already taken")
+                    return False
+                
+                # 3. Обновляем запись (вместо удаления и создания)
+                await db.execute(
+                    """UPDATE bookings 
+                    SET date=?, time=?, created_at=? 
+                    WHERE id=?""",
+                    (new_date_str, new_time_str, now_local().isoformat(), booking_id)
+                )
+                
+                await db.commit()
+                
+                # 4. Перепланируем напоминания (вне транзакции)
+                try:
+                    self.scheduler.remove_job(f"reminder_{booking_id}")
+                except:
+                    pass
+                
+                try:
+                    self.scheduler.remove_job(f"feedback_{booking_id}")
+                except:
+                    pass
+                
+                await self._schedule_reminder(booking_id, new_date_str, new_time_str, user_id)
+                
+                await Database.log_event(
+                    user_id, 
+                    "booking_rescheduled", 
+                    f"{old_date_str} {old_time_str} -> {new_date_str} {new_time_str}"
+                )
+                
+                logging.info(f"Booking {booking_id} rescheduled successfully")
+                return True
+                
+            except Exception as e:
+                await db.rollback()
+                logging.error(f"Error in reschedule_booking: {e}")
                 return False
     
     async def _schedule_reminder(self, booking_id: int, date_str: str, time_str: str, user_id: int):
