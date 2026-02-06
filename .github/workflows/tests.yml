@@ -20,6 +20,17 @@ jobs:
     steps:
     - name: 📥 Checkout code
       uses: actions/checkout@v4
+      with:
+        clean: true
+        fetch-depth: 0
+    
+    - name: 🔄 Force pull latest changes
+      run: |
+        git fetch origin
+        git reset --hard origin/main
+        echo "Current commit: $(git rev-parse HEAD)"
+        echo "Files changed in last commit:"
+        git show --name-only --oneline HEAD | tail -n +2
     
     - name: 🐍 Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
@@ -40,6 +51,17 @@ jobs:
         echo "BOT_TOKEN=test_token_123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" > .env
         echo "ADMIN_ID=12345" >> .env
         echo "DATABASE_PATH=./test_bookings.db" >> .env
+    
+    - name: 🔍 Verify file contents
+      run: |
+        echo "=== Checking database/queries.py ==="
+        head -n 30 database/queries.py
+        echo ""
+        echo "=== Checking for ClientStats ==="
+        grep -n "class ClientStats" database/queries.py || echo "ClientStats not found!"
+        echo ""
+        echo "=== Checking fix_linting.py line 50 ==="
+        sed -n '45,55p' fix_linting.py
     
     - name: 🧪 Run tests with pytest
       id: pytest
@@ -92,6 +114,14 @@ jobs:
     steps:
     - name: 📥 Checkout code
       uses: actions/checkout@v4
+      with:
+        clean: true
+        fetch-depth: 0
+    
+    - name: 🔄 Force pull latest changes
+      run: |
+        git fetch origin
+        git reset --hard origin/main
     
     - name: 🐍 Set up Python 3.11
       uses: actions/setup-python@v5
@@ -107,10 +137,11 @@ jobs:
     - name: 🧹 Lint with flake8
       run: |
         # Проверка синтаксиса
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics \
+          --exclude=venv,__pycache__,.git,tests,htmlcov,.pytest_cache
         # Проверка стиля (макс. длина строки 127)
         flake8 . --count --max-complexity=15 --max-line-length=127 --statistics \
-          --exclude=venv,__pycache__,.git,tests,htmlcov,.pytest_cache
+          --exclude=venv,__pycache__,.git,tests,htmlcov,.pytest_cache --config=.flake8
       continue-on-error: false
     
     - name: 🎨 Check formatting with black
@@ -139,6 +170,8 @@ jobs:
     steps:
     - name: 📥 Checkout code
       uses: actions/checkout@v4
+      with:
+        clean: true
     
     - name: 🐍 Set up Python 3.11
       uses: actions/setup-python@v5
