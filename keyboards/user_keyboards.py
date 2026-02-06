@@ -9,7 +9,7 @@ from aiogram.types import (
 )
 from aiogram.fsm.context import FSMContext
 
-from config import MONTH_NAMES, DAY_NAMES_SHORT, WORK_HOURS_START, WORK_HOURS_END
+from config import MONTH_NAMES, DAY_NAMES_SHORT, WORK_HOURS_START, WORK_HOURS_END, DAY_NAMES
 from database.queries import Database
 from utils.helpers import now_local
 
@@ -26,7 +26,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
 
 
 async def create_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
-    """Календарь с навигацией по месяцам"""
+    """Календарь с навигацией по месяцам (оптимизированный)"""
     keyboard = []
     
     # Навигация
@@ -54,6 +54,9 @@ async def create_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
         for day in DAY_NAMES_SHORT
     ])
     
+    # Получаем все статусы одним запросом (ОПТИМИЗАЦИЯ!)
+    month_statuses = await Database.get_month_statuses(year, month)
+    
     # Дни месяца
     cal = calendar.monthcalendar(year, month)
     today = now_local().date()
@@ -70,14 +73,15 @@ async def create_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
                 if date < today:
                     row.append(InlineKeyboardButton(text="⚫", callback_data="ignore"))
                 else:
-                    status = await Database.get_day_status(date_str)
+                    # Используем закэшированный статус
+                    status = month_statuses.get(date_str, "🟢")
                     row.append(InlineKeyboardButton(
                         text=f"{day}{status}",
                         callback_data=f"day:{date_str}"
                     ))
         keyboard.append(row)
     
-    keyboard.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="back_calendar")])
+    keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_booking_flow")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
@@ -85,7 +89,7 @@ async def create_time_slots(
     date_str: str, 
     state: FSMContext = None
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """Слоты времени"""
+    """Слоты времени (исправлен hardcoded значения)"""
     keyboard = []
     date_obj = datetime.strptime(date_str, "%Y-%m-%d")
     now = now_local()
@@ -94,7 +98,7 @@ async def create_time_slots(
     occupied_slots = await Database.get_occupied_slots_for_day(date_str)
     
     free_count = 0
-    total_slots = 0
+    total_slots = WORK_HOURS_END - WORK_HOURS_START  # Динамически вычисляем!
     
     for hour in range(WORK_HOURS_START, WORK_HOURS_END):
         time_str = f"{hour:02d}:00"
@@ -107,7 +111,6 @@ async def create_time_slots(
         if slot_datetime < now:
             continue
         
-        total_slots += 1
         is_free = time_str not in occupied_slots
         
         if is_free:
@@ -138,7 +141,6 @@ async def create_time_slots(
     keyboard.append([InlineKeyboardButton(text="🔙 К календарю", callback_data="back_calendar")])
     
     # Формируем текст
-    from config import DAY_NAMES
     day_name = DAY_NAMES[date_obj.weekday()]
     
     text = (
