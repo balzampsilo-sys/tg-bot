@@ -17,7 +17,7 @@ from aiogram.types import (
     Message,
 )
 
-from config import DAY_NAMES
+from config import BROADCAST_DELAY, DAY_NAMES
 from database.queries import Database
 from keyboards.admin_keyboards import ADMIN_MENU
 from keyboards.user_keyboards import MAIN_MENU
@@ -50,7 +50,6 @@ async def exit_admin(message: Message):
     await message.answer("👋 Вы вышли из админ-панели", reply_markup=MAIN_MENU)
 
 
-# ИСПРАВЛЕНО: Добавлен глобальный обработчик /cancel
 @router.message(Command("cancel"))
 async def cancel_command(message: Message, state: FSMContext):
     """Глобальная отмена любого действия"""
@@ -134,7 +133,6 @@ async def schedule_view(message: Message):
         bookings = schedule_by_date.get(date_str, [])
 
         if bookings:
-            # ИСПРАВЛЕНО: Использование DAY_NAMES из config
             day_name = DAY_NAMES[current_date.weekday()]
             text += f"📆 {current_date.strftime('%d.%m')} ({day_name})\n"
             for time_str, username in bookings:
@@ -213,8 +211,6 @@ async def export_data(message: Message):
         return
 
     # Получаем все записи через Database API
-    # Примечание: для полной реализации нужно добавить метод get_all_bookings в Database
-    # Но для демонстрации используем расписание на 100 дней
     today = now_local()
     start_date = (today - timedelta(days=365)).strftime("%Y-%m-%d")  # За последний год
     bookings_data = await Database.get_week_schedule(start_date, days=730)  # 2 года
@@ -276,11 +272,11 @@ async def broadcast_execute(message: Message, state: FSMContext):
     success_count = 0
     fail_count = 0
 
-    # ИСПРАВЛЕНО: Добавлен rate limiting для предотвращения flood
+    # Используем константу из config
     for user_id in user_ids:
         try:
             await message.bot.send_message(user_id, broadcast_text)
-            await asyncio.sleep(0.05)  # 50ms задержка между сообщениями
+            await asyncio.sleep(BROADCAST_DELAY)  # Используем константу
             success_count += 1
         except Exception:
             fail_count += 1
