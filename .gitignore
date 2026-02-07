@@ -1,5 +1,48 @@
+# Environment
 .env
+
+# Database
 bookings.db
+*.db
+
+# Virtual environment
 venv/
+env/
+.venv/
+
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# Build artifacts
+black_output.txt
+syntax_errors.txt
+*.txt.bak
+*.log
+
+# Testing
+htmlcov/
+.pytest_cache/
+.coverage
+.coverage.*
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
