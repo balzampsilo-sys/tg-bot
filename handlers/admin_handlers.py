@@ -3,6 +3,7 @@
 import asyncio
 import csv
 import io
+import logging
 from collections import defaultdict
 from datetime import timedelta
 
@@ -56,9 +57,9 @@ async def cancel_command(message: Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state is None:
         return
-    
+
     await state.clear()
-    
+
     # Возвращаем в соответствующее меню в зависимости от прав
     if is_admin(message.from_user.id):
         await message.answer("❌ Действие отменено", reply_markup=ADMIN_MENU)
@@ -256,7 +257,18 @@ async def broadcast_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AdminStates.awaiting_broadcast_message)
 async def broadcast_execute(message: Message, state: FSMContext):
-    """Выполнение рассылки с rate limiting"""
+    """Выполнение рассылки с rate limiting (SECURE)"""
+    # CRITICAL SECURITY FIX: проверка админа в FSM-обработчике
+    # Уязвимость: любой пользователь мог установить FSM state и выполнить рассылку
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("❌ Нет доступа")
+        logging.warning(
+            f"🚨 SECURITY: Unauthorized broadcast attempt from user_id={message.from_user.id} "
+            f"username=@{message.from_user.username}"
+        )
+        return
+
     if message.text == "/cancel":
         await state.clear()
         await message.answer("❌ Рассылка отменена", reply_markup=ADMIN_MENU)
@@ -278,7 +290,9 @@ async def broadcast_execute(message: Message, state: FSMContext):
             await message.bot.send_message(user_id, broadcast_text)
             await asyncio.sleep(BROADCAST_DELAY)  # Используем константу
             success_count += 1
-        except Exception:
+        except Exception as e:
+            # Улучшенное логирование ошибок
+            logging.error(f"Broadcast failed for user_id={user_id}: {e}")
             fail_count += 1
 
     await state.clear()
@@ -287,6 +301,10 @@ async def broadcast_execute(message: Message, state: FSMContext):
         f"Успешно: {success_count}\n"
         f"Ошибок: {fail_count}",
         reply_markup=ADMIN_MENU,
+    )
+
+    logging.info(
+        f"Broadcast completed by admin. Success: {success_count}, Failed: {fail_count}"
     )
 
 
@@ -306,6 +324,8 @@ async def cleanup_old_bookings(callback: CallbackQuery):
         "✅ Очистка завершена\n\n" f"Удалено старых записей: {deleted_count}"
     )
     await callback.answer(f"Удалено: {deleted_count}")
+
+    logging.info(f"Admin cleanup: deleted {deleted_count} old bookings")
 
 
 @router.callback_query(F.data == "admin_block_slots")
