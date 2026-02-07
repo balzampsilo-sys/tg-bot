@@ -12,6 +12,7 @@ from aiogram.types import (
 )
 
 from config import (
+    CALENDAR_MAX_MONTHS_AHEAD,
     DAY_NAMES,
     DAY_NAMES_SHORT,
     MONTH_NAMES,
@@ -33,9 +34,10 @@ MAIN_MENU = ReplyKeyboardMarkup(
 
 
 async def create_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
-    """Календарь с навигацией по месяцам (оптимизированный)"""
+    """Календарь с навигацией по месяцам (оптимизированный с ограничениями)"""
     keyboard = []
-
+    today = now_local()
+    
     # Навигация
     prev_month = month - 1
     prev_year = year
@@ -49,17 +51,51 @@ async def create_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
         next_month = 1
         next_year += 1
 
+    # Ограничение навигации: не позволяем уйти в прошлое
+    can_go_prev = (
+        prev_year > today.year or 
+        (prev_year == today.year and prev_month >= today.month)
+    )
+    
+    # Ограничение: максимум N месяцев вперёд
+    max_year = today.year
+    max_month = today.month + CALENDAR_MAX_MONTHS_AHEAD
+    if max_month > 12:
+        max_year += max_month // 12
+        max_month = max_month % 12
+        if max_month == 0:
+            max_month = 12
+            max_year -= 1
+    
+    can_go_next = (
+        next_year < max_year or 
+        (next_year == max_year and next_month <= max_month)
+    )
+
+    # Кнопки навигации
+    prev_button = (
+        InlineKeyboardButton(
+            text="◀️", callback_data=f"cal:{prev_year}-{prev_month:02d}"
+        )
+        if can_go_prev
+        else InlineKeyboardButton(text=" ", callback_data="ignore")
+    )
+    
+    next_button = (
+        InlineKeyboardButton(
+            text="▶️", callback_data=f"cal:{next_year}-{next_month:02d}"
+        )
+        if can_go_next
+        else InlineKeyboardButton(text=" ", callback_data="ignore")
+    )
+
     keyboard.append(
         [
-            InlineKeyboardButton(
-                text="◀️", callback_data=f"cal:{prev_year}-{prev_month:02d}"
-            ),
+            prev_button,
             InlineKeyboardButton(
                 text=f"{MONTH_NAMES[month-1]} {year}", callback_data="ignore"
             ),
-            InlineKeyboardButton(
-                text="▶️", callback_data=f"cal:{next_year}-{next_month:02d}"
-            ),
+            next_button,
         ]
     )
 
@@ -76,7 +112,7 @@ async def create_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
 
     # Дни месяца
     cal = calendar.monthcalendar(year, month)
-    today = now_local().date()
+    today_date = today.date()
 
     for week in cal:
         row = []
@@ -87,7 +123,7 @@ async def create_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
                 date = datetime(year, month, day).date()
                 date_str = date.strftime("%Y-%m-%d")
 
-                if date < today:
+                if date < today_date:
                     row.append(InlineKeyboardButton(text="⚫", callback_data="ignore"))
                 else:
                     # Используем закэшированный статус
