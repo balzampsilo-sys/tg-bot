@@ -10,6 +10,8 @@ from aiogram.types import CallbackQuery, Message
 from config import (
     CANCELLATION_HOURS,
     MAX_BOOKINGS_PER_USER,
+    ONBOARDING_DELAY_LONG,
+    ONBOARDING_DELAY_SHORT,
     SERVICE_DURATION,
     SERVICE_LOCATION,
     SERVICE_PRICE,
@@ -35,7 +37,7 @@ async def start_cmd(message: Message, state: FSMContext):
             "👋 Добро пожаловать в систему онлайн-записи!\n\n"
             "🎯 Записаться на удобное время — всего 3 клика"
         )
-        await asyncio.sleep(1)
+        await asyncio.sleep(ONBOARDING_DELAY_SHORT)
 
         # Преимущества
         await message.answer(
@@ -49,7 +51,7 @@ async def start_cmd(message: Message, state: FSMContext):
             f"💰 Стоимость: {SERVICE_PRICE}\n"
             f"📍 Место: {SERVICE_LOCATION}"
         )
-        await asyncio.sleep(1)
+        await asyncio.sleep(ONBOARDING_DELAY_SHORT)
 
         # Интерактивный выбор
         await message.answer(
@@ -89,7 +91,7 @@ async def onboarding_tour(callback: CallbackQuery, state: FSMContext):
         "   Вам придёт напоминание за 24ч\n\n"
         "💡 Можно иметь до 3 записей одновременно"
     )
-    await asyncio.sleep(4)
+    await asyncio.sleep(ONBOARDING_DELAY_LONG)
     await callback.message.answer("Всё понятно? Попробуем! 🚀", reply_markup=MAIN_MENU)
     await callback.answer()
 
@@ -124,7 +126,6 @@ async def ignore_callback(callback: CallbackQuery):
     await callback.answer()
 
 
-# ИСПРАВЛЕНО: Добавлен catch-all обработчик для неизвестных сообщений
 @router.message()
 async def unknown_message(message: Message):
     """Обработчик неизвестных сообщений"""
