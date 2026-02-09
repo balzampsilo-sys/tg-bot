@@ -195,35 +195,31 @@ class Database:
             total_slots = WORK_HOURS_END - WORK_HOURS_START
 
             async with aiosqlite.connect(DATABASE_PATH) as db:
-                # Считаем бронирования
+                # ИСПРАВЛЕНО: Объединяем бронирования и блокировки в один запрос
                 async with db.execute(
-                    """SELECT date, COUNT(*) as booked_count
-                    FROM bookings
-                    WHERE date >= ? AND date <= ?
+                    """SELECT date, SUM(cnt) as total_count FROM (
+                        SELECT date, COUNT(*) as cnt
+                        FROM bookings
+                        WHERE date >= ? AND date <= ?
+                        GROUP BY date
+                        
+                        UNION ALL
+                        
+                        SELECT date, COUNT(*) as cnt
+                        FROM blocked_slots
+                        WHERE date >= ? AND date <= ?
+                        GROUP BY date
+                    )
                     GROUP BY date""",
-                    (first_day.isoformat(), last_day.isoformat()),
+                    (
+                        first_day.isoformat(), last_day.isoformat(),
+                        first_day.isoformat(), last_day.isoformat()
+                    ),
                 ) as cursor:
-                    booking_rows = await cursor.fetchall()
-
-                # Считаем блокировки
-                async with db.execute(
-                    """SELECT date, COUNT(*) as blocked_count
-                    FROM blocked_slots
-                    WHERE date >= ? AND date <= ?
-                    GROUP BY date""",
-                    (first_day.isoformat(), last_day.isoformat()),
-                ) as cursor:
-                    blocked_rows = await cursor.fetchall()
-
-            # Объединяем данные
-            counts = {}
-            for date_str, count in booking_rows:
-                counts[date_str] = count
-            for date_str, count in blocked_rows:
-                counts[date_str] = counts.get(date_str, 0) + count
+                    rows = await cursor.fetchall()
 
             # Определяем статусы
-            for date_str, total_count in counts.items():
+            for date_str, total_count in rows:
                 if total_count == 0:
                     statuses[date_str] = "🟢"
                 elif total_count < total_slots:
