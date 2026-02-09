@@ -34,7 +34,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
 
 
 async def create_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
-    """Календарь с навигацией по месяцам (оптимизированный с ограничениями)"""
+    """Календарь с навигацией по месяцам (с блокировкой прошедших дат)"""
     keyboard = []
     today = now_local()
     
@@ -123,16 +123,26 @@ async def create_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
                 date = datetime(year, month, day).date()
                 date_str = date.strftime("%Y-%m-%d")
 
+                # ✅ УЛУЧШЕНО: Прошедшие даты некликабельны
                 if date < today_date:
                     row.append(InlineKeyboardButton(text="⚫", callback_data="ignore"))
                 else:
                     # Используем закэшированный статус
                     status = month_statuses.get(date_str, "🟢")
-                    row.append(
-                        InlineKeyboardButton(
-                            text=f"{day}{status}", callback_data=f"day:{date_str}"
+                    
+                    # ✅ УЛУЧШЕНО: Полностью занятые дни некликабельны
+                    if status == "🔴":
+                        row.append(
+                            InlineKeyboardButton(
+                                text=f"{day}🔴", callback_data="ignore"
+                            )
                         )
-                    )
+                    else:
+                        row.append(
+                            InlineKeyboardButton(
+                                text=f"{day}{status}", callback_data=f"day:{date_str}"
+                            )
+                        )
         keyboard.append(row)
 
     keyboard.append(
@@ -144,16 +154,29 @@ async def create_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
 async def create_time_slots(
     date_str: str, state: FSMContext = None
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """Слоты времени (исправлен hardcoded значения)"""
+    """Слоты времени с валидацией и улучшенным UX"""
     keyboard = []
     date_obj = datetime.strptime(date_str, "%Y-%m-%d")
     now = now_local()
+
+    # ✅ УЛУЧШЕНО: Проверка что дата не в прошлом
+    if date_obj.date() < now.date():
+        # Возвращаем сообщение об ошибке
+        error_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 К календарю", callback_data="back_calendar")]
+        ])
+        return (
+            "❌ ОШИБКА\n\n"
+            "Эта дата уже прошла.\n"
+            "Выберите дату из календаря.",
+            error_kb
+        )
 
     # Оптимизация: получаем все занятые слоты одним запросом
     occupied_slots = await Database.get_occupied_slots_for_day(date_str)
 
     free_count = 0
-    total_slots = WORK_HOURS_END - WORK_HOURS_START  # Динамически вычисляем!
+    total_slots = WORK_HOURS_END - WORK_HOURS_START
 
     for hour in range(WORK_HOURS_START, WORK_HOURS_END):
         time_str = f"{hour:02d}:00"
@@ -162,6 +185,7 @@ async def create_time_slots(
         )
         slot_datetime = slot_datetime.replace(tzinfo=now.tzinfo)
 
+        # ✅ УЛУЧШЕНО: Пропускаем прошедшие слоты сегодня
         if slot_datetime < now:
             continue
 
@@ -192,32 +216,37 @@ async def create_time_slots(
             InlineKeyboardButton(text=button_text, callback_data=callback_data)
         )
 
-    if free_count == 0 and keyboard:
+    # ✅ УЛУЧШЕНО: Если нет свободных слотов
+    if free_count == 0:
         keyboard = [
             [
                 InlineKeyboardButton(
-                    text="😞 Все слоты на эту дату заняты", callback_data="ignore"
+                    text="😞 Все слоты заняты", callback_data="ignore"
                 )
             ]
         ]
+        text = (
+            "❌ ВСЕ СЛОТЫ ЗАНЯТЫ\n\n"
+            f"📅 {date_obj.strftime('%d.%m.%Y')} ({DAY_NAMES[date_obj.weekday()]})\n\n"
+            "Попробуйте выбрать другую дату."
+        )
+    else:
+        # Формируем текст
+        day_name = DAY_NAMES[date_obj.weekday()]
+        text = (
+            "📍 ШАГ 2 из 3: Выберите время\n\n"
+            f"📅 {date_obj.strftime('%d.%m.%Y')} ({day_name})\n"
+            f"🟢 Свободно: {free_count}/{total_slots} слотов\n"
+        )
+
+        if free_count <= 3:
+            text += "⚠️ Мало мест — записывайтесь скорее!\n"
+
+        text += "\n✅ = свободно | ❌ = занято"
 
     keyboard.append(
         [InlineKeyboardButton(text="🔙 К календарю", callback_data="back_calendar")]
     )
-
-    # Формируем текст
-    day_name = DAY_NAMES[date_obj.weekday()]
-
-    text = (
-        "📍 ШАГ 2 из 3: Выберите время\n\n"
-        f"📅 {date_obj.strftime('%d.%m.%Y')} ({day_name})\n"
-        f"🟢 Свободно: {free_count}/{total_slots} слотов\n"
-    )
-
-    if free_count <= 3 and free_count > 0:
-        text += "⚠️ Мало мест — записывайтесь скорее!\n"
-
-    text += "\n✅ = свободно | ❌ = занято"
 
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard)
 

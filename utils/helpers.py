@@ -33,7 +33,6 @@ def create_ascii_chart(data: list, width: int = 7) -> str:
 
 
 def is_admin(user_id: int) -> bool:
-    """Проверка прав администратора"""
-    from config import ADMIN_ID
-
-    return user_id == ADMIN_ID
+    """Проверка прав администратора (поддержка нескольких админов)"""
+    from config import ADMIN_IDS  # ИСПРАВЛЕНО: множественное число
+    return user_id in ADMIN_IDS

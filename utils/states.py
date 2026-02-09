@@ -17,3 +17,8 @@ class AdminStates(StatesGroup):
     awaiting_message = State()
     awaiting_booking_data = State()
     awaiting_broadcast_message = State()
+    
+    # Состояния для блокировки слотов
+    awaiting_block_date = State()
+    awaiting_block_time = State()
+    awaiting_block_reason = State()

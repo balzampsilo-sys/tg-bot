@@ -120,6 +120,20 @@ async def about_service(message: Message):
     )
 
 
+@router.message(F.text == "📅 Записаться")
+async def booking_button(message: Message, state: FSMContext):
+    """Обработчик кнопки Записаться"""
+    from handlers.booking_handlers import booking_start
+    await booking_start(message, state)
+
+
+@router.message(F.text == "📋 Мои записи")
+async def my_bookings_button(message: Message):
+    """Обработчик кнопки Мои записи"""
+    from handlers.booking_handlers import my_bookings
+    await my_bookings(message)
+
+
 @router.callback_query(F.data == "ignore")
 async def ignore_callback(callback: CallbackQuery):
     """Игнорирование callback"""

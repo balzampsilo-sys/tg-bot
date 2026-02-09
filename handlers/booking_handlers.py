@@ -90,16 +90,32 @@ async def month_nav(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("day:"))
 async def select_day(callback: CallbackQuery, state: FSMContext):
-    """Выбор дня"""
+    """Выбор дня с дополнительной валидацией"""
     # ВАЛИДАЦИЯ
     try:
         date_str = callback.data.split(":", 1)[1]
-        # Проверяем что дата валидна
-        datetime.strptime(date_str, "%Y-%m-%d")
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
     except (ValueError, IndexError) as e:
         await callback.answer("❌ Ошибка: неверная дата", show_alert=True)
         logging.error(f"Invalid date in select_day: {callback.data}, error: {e}")
         await state.clear()
+        return
+
+    # Проверка что дата не в прошлом
+    today = now_local().date()
+    if date_obj.date() < today:
+        await callback.answer("❌ Нельзя выбрать прошедшую дату", show_alert=True)
+        return
+    
+    # Проверяем есть ли свободные слоты
+    occupied = await Database.get_occupied_slots_for_day(date_str)
+    total_slots = WORK_HOURS_END - WORK_HOURS_START
+    
+    if len(occupied) >= total_slots:
+        await callback.answer(
+            "❌ Все слоты на эту дату заняты\n\nВыберите другую дату", 
+            show_alert=True
+        )
         return
 
     await callback.answer("⏳ Загружаю слоты...")
@@ -111,6 +127,11 @@ async def select_day(callback: CallbackQuery, state: FSMContext):
         logging.error(f"Error editing message in select_day: {e}")
         await callback.answer("❌ Ошибка отображения")
         await state.clear()
+
+@router.callback_query(F.data == "ignore")
+async def handle_ignore_callback(callback: CallbackQuery):
+    """Обработчик для заблокированных кнопок (прошедшие даты, занятые слоты)"""
+    await callback.answer()  # Тихо игнорируем - ничего не происходит
 
 
 @router.callback_query(F.data.startswith("time:"))
@@ -638,14 +659,38 @@ async def handle_error_callback(callback: CallbackQuery):
 
 
 @router.callback_query()
-async def catch_all_callback(callback: CallbackQuery):
-    """Обработчик для всех необработанных callback"""
+async def catch_all_callback(callback: CallbackQuery, state: FSMContext):
+    """Обработчик для устаревших кнопок"""
+    
+    # Если это "ignore" - он уже обработан выше, но на всякий случай:
+    if callback.data == "ignore":
+        await callback.answer()
+        return
+    
     logging.warning(
         f"Unhandled callback: {callback.data} from user {callback.from_user.id}"
     )
-    # ИСПРАВЛЕНО: Удаление устаревшей клавиатуры
+    
+    # Удаляем старую клавиатуру
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await callback.answer("⚠️ Устаревшая кнопка", show_alert=False)
+    
+    await callback.answer()  # Тихо (без уведомления)
+    
+    # Показываем новый календарь
+    await state.clear()
+    today = now_local()
+    kb = await create_month_calendar(today.year, today.month)
+    can_book, current_count = await Database.can_user_book(callback.from_user.id)
+    
+    await callback.message.answer(
+        "📍 ШАГ 1 из 3: Выберите дату\n\n"
+        "🟢 = все слоты свободны\n"
+        "🟡 = есть свободные слоты\n"
+        "🔴 = все занято\n"
+        "⚫ = прошедшая дата\n\n"
+        f"📊 Ваших записей: {current_count}/{MAX_BOOKINGS_PER_USER}",
+        reply_markup=kb
+    )

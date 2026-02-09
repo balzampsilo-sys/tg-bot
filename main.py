@@ -24,7 +24,18 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
-    scheduler = AsyncIOScheduler()
+    
+    # Настройка планировщика с одним исполнителем
+    scheduler = AsyncIOScheduler(
+        jobstores={},
+        executors={
+            'default': {'type': 'threadpool', 'max_workers': 1}
+        },
+        job_defaults={
+            'coalesce': False,
+            'max_instances': 1
+        }
+    )
 
     # Инициализация БД
     await Database.init_db()
@@ -37,10 +48,10 @@ async def main():
     dp["booking_service"] = booking_service
     dp["notification_service"] = notification_service
 
-    # Регистрация роутеров
-    dp.include_router(user_handlers.router)
-    dp.include_router(booking_handlers.router)
-    dp.include_router(admin_handlers.router)
+    # Регистрация роутеров (ВАЖЕН ПОРЯДОК!)
+    dp.include_router(admin_handlers.router)      # 1. Админ первым
+    dp.include_router(booking_handlers.router)    # 2. Бронирования
+    dp.include_router(user_handlers.router)       # 3. Пользователи последним (есть catch-all)
 
     # Восстановление напоминаний
     await booking_service.restore_reminders()

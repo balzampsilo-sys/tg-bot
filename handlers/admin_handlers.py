@@ -29,7 +29,7 @@ from utils.states import AdminStates
 router = Router()
 
 
-@router.message(F.text == "/admin")
+@router.message(Command("admin"))
 async def admin_panel(message: Message):
     """Вход в админ-панель"""
     if not is_admin(message.from_user.id):
@@ -329,19 +329,332 @@ async def cleanup_old_bookings(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "admin_block_slots")
-async def block_slots_info(callback: CallbackQuery):
-    """Информация о блокировке слотов"""
+async def block_slots_menu(callback: CallbackQuery):
+    """Меню блокировки слотов"""
     if not is_admin(callback.from_user.id):
         await callback.answer("❌ Нет доступа", show_alert=True)
         return
 
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔒 Заблокировать слот", callback_data="block_slot_start"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔓 Разблокировать слот", callback_data="unblock_slot_start"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📋 Список блокировок", callback_data="list_blocked_slots"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔙 Назад", callback_data="admin_cancel"
+                )
+            ],
+        ]
+    )
+
     await callback.message.edit_text(
         "🔒 БЛОКИРОВКА СЛОТОВ\n\n"
-        "Эта функция позволяет заблокировать определенные\n"
-        "даты и время для записи.\n\n"
-        "💡 В разработке: будет доступна в следующей версии"
+        "Выберите действие:",
+        reply_markup=kb
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "block_slot_start")
+async def block_slot_start(callback: CallbackQuery, state: FSMContext):
+    """Начало блокировки слота"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("❌ Нет доступа", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.awaiting_block_date)
+    
+    await callback.message.edit_text(
+        "🔒 БЛОКИРОВКА СЛОТА\n\n"
+        "Шаг 1: Введите дату в формате ГГГГ-ММ-ДД\n"
+        "Например: 2026-02-15\n\n"
+        "Для отмены отправьте /cancel"
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.awaiting_block_date)
+async def block_slot_date(message: Message, state: FSMContext):
+    """Обработка даты для блокировки"""
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("❌ Блокировка отменена", reply_markup=ADMIN_MENU)
+        return
+
+    # Валидация даты
+    try:
+        from datetime import datetime
+        date_obj = datetime.strptime(message.text, "%Y-%m-%d")
+        date_str = message.text
+        
+        # Проверка что дата не в прошлом
+        if date_obj.date() < now_local().date():
+            await message.answer(
+                "❌ Нельзя блокировать прошедшие даты\n\n"
+                "Введите корректную дату:"
+            )
+            return
+    except ValueError:
+        await message.answer(
+            "❌ Неверный формат даты\n\n"
+            "Используйте формат ГГГГ-ММ-ДД\n"
+            "Например: 2026-02-15"
+        )
+        return
+
+    await state.update_data(block_date=date_str)
+    await state.set_state(AdminStates.awaiting_block_time)
+    
+    await message.answer(
+        f"✅ Дата: {date_str}\n\n"
+        "Шаг 2: Введите время в формате ЧЧ:ММ\n"
+        "Например: 14:00\n\n"
+        "Или введите 'all' чтобы заблокировать весь день"
+    )
+
+
+@router.message(AdminStates.awaiting_block_time)
+async def block_slot_time(message: Message, state: FSMContext):
+    """Обработка времени для блокировки"""
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("❌ Блокировка отменена", reply_markup=ADMIN_MENU)
+        return
+
+    data = await state.get_data()
+    date_str = data.get("block_date")
+
+    # Блокировка всего дня
+    if message.text.lower() == "all":
+        await state.update_data(block_time="all")
+        await state.set_state(AdminStates.awaiting_block_reason)
+        
+        await message.answer(
+            f"📅 Дата: {date_str}\n"
+            "🕒 Время: весь день\n\n"
+            "Шаг 3: Введите причину блокировки\n"
+            "(или отправьте '-' чтобы пропустить)"
+        )
+        return
+
+    # Валидация времени
+    try:
+        from datetime import datetime
+        from config import WORK_HOURS_START, WORK_HOURS_END
+        
+        time_obj = datetime.strptime(message.text, "%H:%M")
+        hour = time_obj.hour
+        
+        if not (WORK_HOURS_START <= hour < WORK_HOURS_END):
+            await message.answer(
+                f"❌ Время должно быть в рабочих часах ({WORK_HOURS_START}:00 - {WORK_HOURS_END}:00)\n\n"
+                "Введите корректное время:"
+            )
+            return
+            
+        time_str = message.text
+    except ValueError:
+        await message.answer(
+            "❌ Неверный формат времени\n\n"
+            "Используйте формат ЧЧ:ММ\n"
+            "Например: 14:00"
+        )
+        return
+
+    await state.update_data(block_time=time_str)
+    await state.set_state(AdminStates.awaiting_block_reason)
+    
+    await message.answer(
+        f"✅ Дата: {date_str}\n"
+        f"✅ Время: {time_str}\n\n"
+        "Шаг 3: Введите причину блокировки\n"
+        "(или отправьте '-' чтобы пропустить)"
+    )
+
+
+@router.message(AdminStates.awaiting_block_reason)
+async def block_slot_reason(message: Message, state: FSMContext):
+    """Обработка причины и финальная блокировка"""
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    date_str = data.get("block_date")
+    time_str = data.get("block_time")
+    reason = None if message.text == "-" else message.text
+    
+    admin_id = message.from_user.id
+    
+    # Блокировка всего дня
+    if time_str == "all":
+        from config import WORK_HOURS_START, WORK_HOURS_END
+        
+        blocked_count = 0
+        failed_count = 0
+        
+        for hour in range(WORK_HOURS_START, WORK_HOURS_END):
+            slot_time = f"{hour:02d}:00"
+            success = await Database.block_slot(date_str, slot_time, admin_id, reason)
+            if success:
+                blocked_count += 1
+            else:
+                failed_count += 1
+        
+        await state.clear()
+        await message.answer(
+            f"✅ Блокировка завершена!\n\n"
+            f"📅 Дата: {date_str}\n"
+            f"🔒 Заблокировано: {blocked_count} слотов\n"
+            f"❌ Уже были заняты: {failed_count} слотов",
+            reply_markup=ADMIN_MENU
+        )
+        
+        logging.info(f"Admin {admin_id} blocked full day {date_str}")
+        return
+    
+    # Блокировка одного слота
+    success = await Database.block_slot(date_str, time_str, admin_id, reason)
+    
+    await state.clear()
+    
+    if success:
+        await message.answer(
+            f"✅ Слот заблокирован!\n\n"
+            f"📅 Дата: {date_str}\n"
+            f"🕒 Время: {time_str}\n"
+            f"💬 Причина: {reason or 'не указана'}",
+            reply_markup=ADMIN_MENU
+        )
+        logging.info(f"Admin {admin_id} blocked slot {date_str} {time_str}")
+    else:
+        await message.answer(
+            f"❌ Слот уже заблокирован или занят\n\n"
+            f"📅 {date_str} {time_str}",
+            reply_markup=ADMIN_MENU
+        )
+
+
+@router.callback_query(F.data == "unblock_slot_start")
+async def unblock_slot_menu(callback: CallbackQuery):
+    """Меню разблокировки"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("❌ Нет доступа", show_alert=True)
+        return
+
+    # Получаем все блокировки
+    blocked = await Database.get_blocked_slots()
+    
+    if not blocked:
+        await callback.answer("✅ Нет заблокированных слотов", show_alert=True)
+        return
+
+    keyboard = []
+    for date_str, time_str, reason in blocked[:20]:  # Лимит 20
+        text = f"🔓 {date_str} {time_str}"
+        if reason:
+            text += f" ({reason[:20]}...)" if len(reason) > 20 else f" ({reason})"
+        
+        keyboard.append([
+            InlineKeyboardButton(
+                text=text,
+                callback_data=f"unblock:{date_str}:{time_str}"
+            )
+        ])
+    
+    keyboard.append([
+        InlineKeyboardButton(text="🔙 Назад", callback_data="admin_block_slots")
+    ])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(
+        f"🔓 РАЗБЛОКИРОВАТЬ СЛОТ\n\n"
+        f"Найдено блокировок: {len(blocked)}\n"
+        "Выберите слот для разблокировки:",
+        reply_markup=kb
+    )
+
+
+@router.callback_query(F.data.startswith("unblock:"))
+async def unblock_slot_confirm(callback: CallbackQuery):
+    """Разблокировка слота"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("❌ Нет доступа", show_alert=True)
+        return
+
+    try:
+        _, date_str, time_str = callback.data.split(":", 2)
+    except ValueError:
+        await callback.answer("❌ Ошибка данных", show_alert=True)
+        return
+
+    success = await Database.unblock_slot(date_str, time_str)
+    
+    if success:
+        await callback.answer(f"✅ Слот {date_str} {time_str} разблокирован")
+        logging.info(f"Admin {callback.from_user.id} unblocked slot {date_str} {time_str}")
+        
+        # Обновляем список
+        await unblock_slot_menu(callback)
+    else:
+        await callback.answer("❌ Слот не найден", show_alert=True)
+
+
+@router.callback_query(F.data == "list_blocked_slots")
+async def list_blocked_slots(callback: CallbackQuery):
+    """Список всех блокировок"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("❌ Нет доступа", show_alert=True)
+        return
+
+    blocked = await Database.get_blocked_slots()
+    
+    if not blocked:
+        await callback.message.edit_text(
+            "✅ Нет заблокированных слотов",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔙 Назад", callback_data="admin_block_slots")
+            ]])
+        )
+        return
+
+    text = f"📋 ЗАБЛОКИРОВАННЫЕ СЛОТЫ ({len(blocked)})\n\n"
+    
+    for date_str, time_str, reason in blocked[:50]:  # Лимит 50
+        text += f"🔒 {date_str} {time_str}"
+        if reason:
+            text += f"\n   💬 {reason}\n"
+        text += "\n"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔙 Назад", callback_data="admin_block_slots")
+    ]])
+    
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
+
 
 
 @router.callback_query(F.data == "admin_cancel")

@@ -51,10 +51,15 @@ class Database:
                 (user_id INTEGER, booking_id INTEGER, rating INTEGER, timestamp TEXT)"""
             )
 
+            # Таблица блокировки слотов
             await db.execute("""CREATE TABLE IF NOT EXISTS blocked_slots
                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT, time TEXT, reason TEXT, created_by INTEGER,
-                created_at TEXT, UNIQUE(date, time))""")
+                date TEXT NOT NULL,
+                time TEXT NOT NULL,
+                reason TEXT,
+                blocked_by INTEGER NOT NULL,
+                blocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(date, time))""")
 
             await db.execute("""CREATE TABLE IF NOT EXISTS admin_sessions
                 (user_id INTEGER PRIMARY KEY, message_id INTEGER, updated_at TEXT)""")
@@ -109,7 +114,7 @@ class Database:
 
     @staticmethod
     async def is_slot_free(date_str: str, time_str: str) -> bool:
-        """Проверка свободен ли слот"""
+        """Проверка свободен ли слот (включая блокировки)"""
         try:
             async with aiosqlite.connect(DATABASE_PATH) as db:
                 async with db.execute(
@@ -131,16 +136,18 @@ class Database:
 
     @staticmethod
     async def get_occupied_slots_for_day(date_str: str) -> set:
-        """Получить все занятые слоты за день"""
+        """Получить все занятые слоты за день (включая блокировки)"""
         occupied = set()
         try:
             async with aiosqlite.connect(DATABASE_PATH) as db:
+                # Забронированные слоты
                 async with db.execute(
                     "SELECT time FROM bookings WHERE date=?", (date_str,)
                 ) as cursor:
                     bookings = await cursor.fetchall()
                     occupied.update(time for (time,) in bookings)
 
+                # Заблокированные слоты
                 async with db.execute(
                     "SELECT time FROM blocked_slots WHERE date=?", (date_str,)
                 ) as cursor:
@@ -164,6 +171,7 @@ class Database:
             total_slots = WORK_HOURS_END - WORK_HOURS_START
 
             async with aiosqlite.connect(DATABASE_PATH) as db:
+                # Считаем бронирования
                 async with db.execute(
                     """SELECT date, COUNT(*) as booked_count
                     FROM bookings
@@ -171,12 +179,30 @@ class Database:
                     GROUP BY date""",
                     (first_day.isoformat(), last_day.isoformat()),
                 ) as cursor:
-                    rows = await cursor.fetchall()
+                    booking_rows = await cursor.fetchall()
 
-            for date_str, booked_count in rows:
-                if booked_count == 0:
+                # Считаем блокировки
+                async with db.execute(
+                    """SELECT date, COUNT(*) as blocked_count
+                    FROM blocked_slots
+                    WHERE date >= ? AND date <= ?
+                    GROUP BY date""",
+                    (first_day.isoformat(), last_day.isoformat()),
+                ) as cursor:
+                    blocked_rows = await cursor.fetchall()
+
+            # Объединяем данные
+            counts = {}
+            for date_str, count in booking_rows:
+                counts[date_str] = count
+            for date_str, count in blocked_rows:
+                counts[date_str] = counts.get(date_str, 0) + count
+
+            # Определяем статусы
+            for date_str, total_count in counts.items():
+                if total_count == 0:
                     statuses[date_str] = "🟢"
-                elif booked_count < total_slots:
+                elif total_count < total_slots:
                     statuses[date_str] = "🟡"
                 else:
                     statuses[date_str] = "🔴"
@@ -188,7 +214,7 @@ class Database:
 
     @staticmethod
     async def get_day_status(date_str: str) -> str:
-        """Статус загрузки дня (🟢🟡🔴)"""
+        """Статус загрузки дня (🟢🟡🔴) включая блокировки"""
         try:
             async with aiosqlite.connect(DATABASE_PATH) as db:
                 async with db.execute(
@@ -197,16 +223,101 @@ class Database:
                     result = await cursor.fetchone()
                     booked_count = result[0] if result else 0
 
+                async with db.execute(
+                    "SELECT COUNT(*) FROM blocked_slots WHERE date=?", (date_str,)
+                ) as cursor:
+                    result = await cursor.fetchone()
+                    blocked_count = result[0] if result else 0
+
+            total_occupied = booked_count + blocked_count
             total_slots = WORK_HOURS_END - WORK_HOURS_START
-            if booked_count == 0:
+            
+            if total_occupied == 0:
                 return "🟢"
-            elif booked_count < total_slots:
+            elif total_occupied < total_slots:
                 return "🟡"
             else:
                 return "🔴"
         except Exception as e:
             logging.error(f"Error getting day status for {date_str}: {e}")
             return "🟢"  # По умолчанию свободно
+
+    # === МЕТОДЫ ДЛЯ БЛОКИРОВКИ СЛОТОВ ===
+
+    @staticmethod
+    async def block_slot(date_str: str, time_str: str, admin_id: int, reason: str = None) -> bool:
+        """Заблокировать слот"""
+        try:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                await db.execute(
+                    "INSERT INTO blocked_slots (date, time, reason, blocked_by, blocked_at) VALUES (?, ?, ?, ?, ?)",
+                    (date_str, time_str, reason, admin_id, now_local().isoformat())
+                )
+                await db.commit()
+                logging.info(f"Slot {date_str} {time_str} blocked by admin {admin_id}")
+                return True
+        except aiosqlite.IntegrityError:
+            # Слот уже заблокирован или занят бронированием
+            logging.warning(f"Slot {date_str} {time_str} already blocked or booked")
+            return False
+        except Exception as e:
+            logging.error(f"Error blocking slot {date_str} {time_str}: {e}")
+            return False
+
+    @staticmethod
+    async def unblock_slot(date_str: str, time_str: str) -> bool:
+        """Разблокировать слот"""
+        try:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                cursor = await db.execute(
+                    "DELETE FROM blocked_slots WHERE date = ? AND time = ?",
+                    (date_str, time_str)
+                )
+                await db.commit()
+                deleted = cursor.rowcount > 0
+                if deleted:
+                    logging.info(f"Slot {date_str} {time_str} unblocked")
+                return deleted
+        except Exception as e:
+            logging.error(f"Error unblocking slot {date_str} {time_str}: {e}")
+            return False
+
+    @staticmethod
+    async def is_slot_blocked(date_str: str, time_str: str) -> bool:
+        """Проверить, заблокирован ли слот"""
+        try:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                async with db.execute(
+                    "SELECT 1 FROM blocked_slots WHERE date = ? AND time = ?",
+                    (date_str, time_str)
+                ) as cursor:
+                    result = await cursor.fetchone()
+                    return result is not None
+        except Exception as e:
+            logging.error(f"Error checking if slot blocked {date_str} {time_str}: {e}")
+            return False
+
+    @staticmethod
+    async def get_blocked_slots(date_str: str = None) -> List[Tuple]:
+        """Получить список заблокированных слотов"""
+        try:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                if date_str:
+                    async with db.execute(
+                        "SELECT date, time, reason FROM blocked_slots WHERE date = ? ORDER BY time",
+                        (date_str,)
+                    ) as cursor:
+                        return await cursor.fetchall()
+                else:
+                    async with db.execute(
+                        "SELECT date, time, reason FROM blocked_slots ORDER BY date, time"
+                    ) as cursor:
+                        return await cursor.fetchall()
+        except Exception as e:
+            logging.error(f"Error getting blocked slots: {e}")
+            return []
+
+    # === ОСТАЛЬНЫЕ МЕТОДЫ ===
 
     @staticmethod
     async def get_user_bookings(user_id: int) -> List[Tuple]:

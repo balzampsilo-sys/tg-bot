@@ -9,12 +9,18 @@ load_dotenv()
 
 # Telegram
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+
+# Админы (поддержка нескольких)
+ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
+if not ADMIN_IDS_STR:
+    raise ValueError("ADMIN_IDS not found in .env file")
+
+ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS_STR.split(",") if id.strip()]
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN not found in .env file")
-if not ADMIN_ID:
-    raise ValueError("ADMIN_ID not found in .env file")
+if not ADMIN_IDS:
+    raise ValueError("No valid admin IDs provided")
 
 # База данных
 DATABASE_PATH = "bookings.db"
@@ -37,7 +43,7 @@ TIMEZONE = ZoneInfo("Europe/Moscow")
 ONBOARDING_DELAY_SHORT = 1.0  # Короткая задержка между сообщениями
 ONBOARDING_DELAY_LONG = 4.0   # Длинная задержка для чтения
 BROADCAST_DELAY = 0.05        # Задержка между сообщениями в рассылке (50ms)
-RATΕ_LIMIT_TIME = 1.0         # Время между действиями одного пользователя
+RATE_LIMIT_TIME = 1.0         # Время между действиями одного пользователя (ИСПРАВЛЕНО)
 
 # FSM таймауты (в секундах)
 FSM_STATE_TTL = 600  # 10 минут - автоматический сброс состояния
