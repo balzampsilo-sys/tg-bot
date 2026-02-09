@@ -16,6 +16,7 @@ from config import (
     DAY_NAMES,
     DAY_NAMES_SHORT,
     MONTH_NAMES,
+    TIMEZONE,
     WORK_HOURS_END,
     WORK_HOURS_START,
 )
@@ -158,6 +159,7 @@ async def create_time_slots(
     keyboard = []
     date_obj = datetime.strptime(date_str, "%Y-%m-%d")
     now = now_local()
+    is_today = date_obj.date() == now.date()
 
     # ✅ УЛУЧШЕНО: Проверка что дата не в прошлом
     if date_obj.date() < now.date():
@@ -180,13 +182,15 @@ async def create_time_slots(
 
     for hour in range(WORK_HOURS_START, WORK_HOURS_END):
         time_str = f"{hour:02d}:00"
-        slot_datetime = datetime.combine(
+        
+        # ИСПРАВЛЕНО: Используем TIMEZONE.localize() вместо .replace()
+        slot_datetime_naive = datetime.combine(
             date_obj.date(), datetime.strptime(time_str, "%H:%M").time()
         )
-        slot_datetime = slot_datetime.replace(tzinfo=now.tzinfo)
+        slot_datetime = TIMEZONE.localize(slot_datetime_naive)
 
-        # ✅ УЛУЧШЕНО: Пропускаем прошедшие слоты сегодня
-        if slot_datetime < now:
+        # ✅ ИСПРАВЛЕНО: Пропускаем прошедшие слоты сегодня
+        if is_today and slot_datetime <= now:
             continue
 
         is_free = time_str not in occupied_slots
@@ -225,8 +229,9 @@ async def create_time_slots(
                 )
             ]
         ]
+        reason = "прошли или заняты" if is_today else "заняты"
         text = (
-            "❌ ВСЕ СЛОТЫ ЗАНЯТЫ\n\n"
+            f"❌ ВСЕ СЛОТЫ {reason.upper()}\n\n"
             f"📅 {date_obj.strftime('%d.%m.%Y')} ({DAY_NAMES[date_obj.weekday()]})\n\n"
             "Попробуйте выбрать другую дату."
         )
