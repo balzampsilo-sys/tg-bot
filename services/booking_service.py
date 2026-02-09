@@ -33,27 +33,23 @@ class BookingService:
             await db.execute("BEGIN IMMEDIATE")
 
             try:
-                # Проверяем лимит пользователя
+                # ИСПРАВЛЕНО: Проверяем и лимит, и слот одним запросом
                 async with db.execute(
-                    """SELECT COUNT(*) FROM bookings
-                    WHERE user_id=? AND date >= date('now')""",
-                    (user_id,),
+                    """SELECT 
+                        (SELECT COUNT(*) FROM bookings WHERE user_id=? AND date >= date('now')) as user_count,
+                        (SELECT COUNT(*) FROM bookings WHERE date=? AND time=?) as slot_taken
+                    """,
+                    (user_id, date_str, time_str),
                 ) as cursor:
-                    count = (await cursor.fetchone())[0]
+                    result = await cursor.fetchone()
+                    user_count, slot_taken = result
 
-                if count >= MAX_BOOKINGS_PER_USER:
+                if user_count >= MAX_BOOKINGS_PER_USER:
                     await db.rollback()
                     logging.warning(f"User {user_id} exceeded booking limit")
                     return False, "limit_exceeded"
 
-                # Проверяем свободен ли слот
-                async with db.execute(
-                    "SELECT id FROM bookings WHERE date=? AND time=?",
-                    (date_str, time_str),
-                ) as cursor:
-                    existing = await cursor.fetchone()
-
-                if existing:
+                if slot_taken > 0:
                     await db.rollback()
                     logging.info(f"Slot {date_str} {time_str} already taken")
                     return False, "slot_taken"
@@ -80,7 +76,7 @@ class BookingService:
             except sqlite3.IntegrityError as e:
                 await db.rollback()
                 logging.warning(f"Integrity error creating booking: {e}")
-                return False, "integrity_error"
+                return False, "slot_taken"
             except Exception as e:
                 await db.rollback()
                 logging.error(f"Error in create_booking: {e}")
