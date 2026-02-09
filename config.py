@@ -2,8 +2,8 @@
 
 import os
 import re
-from zoneinfo import ZoneInfo
 
+import pytz
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -45,8 +45,8 @@ SERVICE_DURATION = "1 час"
 SERVICE_LOCATION = "г. Москва, ул. Примерная, 1 / Онлайн"
 SERVICE_PRICE = "3000 ₽"
 
-# Временная зона
-TIMEZONE = ZoneInfo("Europe/Moscow")
+# Временная зона (ИСПРАВЛЕНО: используем pytz для корректной обработки DST)
+TIMEZONE = pytz.timezone("Europe/Moscow")
 
 # Тайминги и задержки (в секундах)
 ONBOARDING_DELAY_SHORT = 1.0  # Короткая задержка между сообщениями
