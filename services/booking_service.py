@@ -167,10 +167,11 @@ class BookingService:
     ):
         """Планирование напоминаний"""
         try:
+            # ИСПРАВЛЕНО: используем localize() вместо replace()
             booking_datetime = datetime.strptime(
                 f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
             )
-            booking_datetime = booking_datetime.replace(tzinfo=TIMEZONE)
+            booking_datetime = TIMEZONE.localize(booking_datetime)
             now = now_local()
             time_until_booking = booking_datetime - now
 
@@ -270,10 +271,11 @@ class BookingService:
 
             restored_count = 0
             for booking_id, date_str, time_str, user_id in all_bookings:
+                # ИСПРАВЛЕНО: используем localize()
                 booking_datetime = datetime.strptime(
                     f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
                 )
-                booking_datetime = booking_datetime.replace(tzinfo=TIMEZONE)
+                booking_datetime = TIMEZONE.localize(booking_datetime)
 
                 # Восстановить напоминание
                 reminder_time = booking_datetime - timedelta(hours=24)
