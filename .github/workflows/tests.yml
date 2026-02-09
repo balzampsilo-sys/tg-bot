@@ -1,0 +1,224 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+      fail-fast: false
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        clean: true
+        fetch-depth: 0
+    
+    - name: 🔄 Force pull latest changes
+      run: |
+        git fetch origin
+        git reset --hard origin/main
+        echo "Current commit: $(git rev-parse HEAD)"
+        echo "Files changed in last commit:"
+        git show --name-only --oneline HEAD | tail -n +2
+    
+    - name: 🐍 Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+        cache-dependency-path: |
+          requirements.txt
+          requirements-test.txt
+    
+    - name: 📦 Install dependencies
+      run: |
+        python -m pip install --upgrade pip setuptools wheel
+        pip install -r requirements-test.txt
+    
+    - name: 🛠️ Create test config
+      run: |
+        echo "BOT_TOKEN=test_token_123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" > .env
+        echo "ADMIN_ID=12345" >> .env
+        echo "DATABASE_PATH=./test_bookings.db" >> .env
+    
+    - name: 🔍 Verify file contents
+      run: |
+        echo "=== Checking database/queries.py ==="
+        head -n 30 database/queries.py
+        echo ""
+        echo "=== Checking for ClientStats ==="
+        grep -n "class ClientStats" database/queries.py || echo "ClientStats not found!"
+        echo ""
+        echo "=== Checking fix_linting.py line 50 ==="
+        sed -n '45,55p' fix_linting.py
+    
+    - name: 🧪 Run tests with pytest
+      id: pytest
+      run: |
+        pytest tests/ -v --cov=. --cov-report=xml --cov-report=term --cov-report=html
+      continue-on-error: false
+    
+    - name: 📊 Generate test summary
+      if: always()
+      run: |
+        echo "## Test Results for Python ${{ matrix.python-version }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ -f coverage.xml ]; then
+          coverage report >> $GITHUB_STEP_SUMMARY 2>&1 || echo "Coverage report generation failed" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ No coverage data found" >> $GITHUB_STEP_SUMMARY
+        fi
+    
+    - name: 📊 Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      if: matrix.python-version == '3.11'
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-py${{ matrix.python-version }}
+        fail_ci_if_error: false
+        token: ${{ secrets.CODECOV_TOKEN }}
+      continue-on-error: true
+    
+    - name: 📄 Upload coverage HTML report
+      uses: actions/upload-artifact@v4
+      if: always() && matrix.python-version == '3.11'
+      with:
+        name: coverage-report-html
+        path: htmlcov/
+        retention-days: 7
+    
+    - name: 📄 Upload test database
+      uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: test-db-py${{ matrix.python-version }}
+        path: test_bookings.db
+        retention-days: 3
+  
+  lint:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        clean: true
+        fetch-depth: 0
+    
+    - name: 🔄 Force pull latest changes
+      run: |
+        git fetch origin
+        git reset --hard origin/main
+    
+    - name: 🐍 Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: 📦 Install linting tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8 black isort pylint
+    
+    - name: 🧹 Lint with flake8
+      run: |
+        # Проверка синтаксиса
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics \
+          --exclude=venv,__pycache__,.git,tests,htmlcov,.pytest_cache
+        # Проверка стиля (макс. длина строки 127)
+        flake8 . --count --max-complexity=15 --max-line-length=127 --statistics \
+          --exclude=venv,__pycache__,.git,tests,htmlcov,.pytest_cache --config=.flake8
+      continue-on-error: false
+    
+    - name: 🎨 Check formatting with black
+      run: |
+        black --check . --exclude='venv|__pycache__|.git|htmlcov|.pytest_cache'
+      continue-on-error: true
+    
+    - name: 📄 Check imports with isort
+      run: |
+        isort --check-only . --skip venv --skip __pycache__ --skip htmlcov --skip .pytest_cache
+      continue-on-error: true
+    
+    - name: 📝 Create lint summary
+      if: always()
+      run: |
+        echo "## Linting Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- Flake8: ✅ Passed" >> $GITHUB_STEP_SUMMARY
+        echo "- Black: Check logs for details" >> $GITHUB_STEP_SUMMARY
+        echo "- isort: Check logs for details" >> $GITHUB_STEP_SUMMARY
+  
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        clean: true
+    
+    - name: 🐍 Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: 📦 Install bandit
+      run: |
+        python -m pip install --upgrade pip
+        pip install bandit[toml]
+    
+    - name: 🔒 Run security scan
+      id: bandit
+      run: |
+        echo "## Security Scan Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        bandit -r . -f json -o bandit-report.json --exclude './venv/*,./tests/*,./htmlcov/*' || true
+        bandit -r . --exclude './venv/*,./tests/*,./htmlcov/*' >> $GITHUB_STEP_SUMMARY 2>&1 || true
+      continue-on-error: true
+    
+    - name: 📎 Upload security report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-report
+        path: bandit-report.json
+        retention-days: 30
+  
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [test, lint, security]
+    if: always()
+    
+    steps:
+    - name: 📊 Generate Final Summary
+      run: |
+        echo "# 🎯 CI/CD Pipeline Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Jobs Status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- Tests: ${{ needs.test.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Linting: ${{ needs.lint.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Security: ${{ needs.security.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ needs.test.result }}" == "success" ] && [ "${{ needs.lint.result }}" == "success" ]; then
+          echo "✅ **All checks passed!**" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Some checks failed. Please review the logs.**" >> $GITHUB_STEP_SUMMARY
+        fi

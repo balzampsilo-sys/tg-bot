@@ -1,0 +1,153 @@
+name: Auto Format Code
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix-linting
+
+jobs:
+  format:
+    name: Auto Format
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.head_ref || github.ref_name }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: 🐍 Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: 📦 Install formatting tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install black isort autoflake flake8
+    
+    - name: 🔍 Check Python syntax
+      id: syntax_check
+      run: |
+        echo "Checking Python syntax..."
+        python -m py_compile $(find . -name '*.py' -not -path './venv/*' -not -path './__pycache__/*' -not -path './htmlcov/*' -not -path './.pytest_cache/*') 2>&1 | tee syntax_errors.txt || true
+        if [ -s syntax_errors.txt ]; then
+          echo "has_syntax_errors=true" >> $GITHUB_OUTPUT
+          echo "⚠️ Syntax errors found!"
+          cat syntax_errors.txt
+        else
+          echo "has_syntax_errors=false" >> $GITHUB_OUTPUT
+          echo "✅ No syntax errors"
+        fi
+      continue-on-error: true
+    
+    - name: 🧹 Run custom linting fixes
+      run: |
+        echo "Running custom linting fixes..."
+        python fix_linting.py || echo "⚠️ Some files couldn't be fixed automatically"
+      continue-on-error: true
+    
+    - name: 🗑️ Remove unused imports with autoflake
+      run: |
+        echo "Removing unused imports..."
+        autoflake --in-place --remove-all-unused-imports --remove-unused-variables \
+          --ignore-init-module-imports --recursive . \
+          --exclude venv,__pycache__,.git,htmlcov,.pytest_cache 2>&1 || echo "⚠️ autoflake had issues with some files"
+      continue-on-error: true
+    
+    - name: 📄 Sort imports with isort
+      run: |
+        echo "Sorting imports..."
+        isort . --skip venv --skip __pycache__ --skip htmlcov --skip .pytest_cache 2>&1 || echo "⚠️ isort had issues with some files"
+      continue-on-error: true
+    
+    - name: 🎨 Format code with black
+      run: |
+        echo "Formatting code with black..."
+        black . --exclude='venv|__pycache__|.git|htmlcov|.pytest_cache' 2>&1 | tee black_output.txt || true
+        
+        if grep -q "failed to reformat" black_output.txt; then
+          echo "⚠️ Black couldn't format some files (syntax errors?)"
+          grep "failed to reformat" black_output.txt || true
+        fi
+        
+        if grep -q "reformatted" black_output.txt; then
+          echo "✅ Black successfully formatted files"
+        fi
+      continue-on-error: true
+    
+    - name: 📝 Check for changes
+      id: changes
+      run: |
+        if [[ -n $(git status -s) ]]; then
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "✅ Code formatting changes detected"
+          echo "Changed files:"
+          git status -s
+        else
+          echo "has_changes=false" >> $GITHUB_OUTPUT
+          echo "✅ No formatting changes needed"
+        fi
+    
+    - name: 💾 Commit changes
+      if: steps.changes.outputs.has_changes == 'true'
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add .
+        git commit -m "style: auto-format code with black, isort, and linting fixes
+        
+        - Fixed trailing whitespace (W291)
+        - Fixed blank line whitespace (W293)
+        - Fixed bare except statements (E722)
+        - Removed unused imports (F401)
+        - Fixed f-strings without placeholders (F541)
+        - Formatted code with black
+        - Sorted imports with isort
+        
+        Note: Some files may have been skipped due to syntax errors."
+        git push
+    
+    - name: 📊 Generate summary
+      if: always()
+      run: |
+        echo "## 🎨 Code Formatting Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ steps.syntax_check.outputs.has_syntax_errors }}" == "true" ]; then
+          echo "⚠️ **Warning: Some files have syntax errors**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "These files were skipped during formatting." >> $GITHUB_STEP_SUMMARY
+          echo "Please fix syntax errors manually." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ "${{ steps.changes.outputs.has_changes }}" == "true" ]; then
+          echo "✅ **Code has been automatically formatted**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Changes:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Trailing whitespace removed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Blank lines cleaned" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Bare except statements fixed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Unused imports removed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Code formatted with black" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Imports sorted with isort" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Changed files:" >> $GITHUB_STEP_SUMMARY
+          git diff --name-only HEAD^ HEAD 2>/dev/null | while read file; do
+            echo "- \`$file\`" >> $GITHUB_STEP_SUMMARY
+          done || echo "(run manually to see changes)" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ **No formatting changes needed**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Code is already properly formatted!" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "💡 **Tip:** Files with syntax errors must be fixed manually before they can be formatted." >> $GITHUB_STEP_SUMMARY

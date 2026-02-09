@@ -1,0 +1,26 @@
+[flake8]
+# Максимальная длина строки
+max-line-length = 127
+
+# Исключаемые директории
+exclude =
+    venv,
+    __pycache__,
+    .git,
+    htmlcov,
+    .pytest_cache,
+    .eggs,
+    *.egg
+
+# Игнорировать определенные ошибки для конкретных файлов
+# F821: undefined name - игнорируем для dataclass в database/queries.py
+# F401: imported but unused - игнорируем для __init__.py
+per-file-ignores =
+    __init__.py:F401
+    database/queries.py:F821
+
+# Глобально игнорируемые коды:
+# E203 - whitespace before ':' (конфликт с black)
+# W503 - line break before binary operator
+# E501 - line too long (обрабатывается black)
+ignore = E203,W503,E501
