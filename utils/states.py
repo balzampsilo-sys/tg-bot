@@ -1,5 +1,4 @@
-"""FSM состояния"""
-
+"""Состояния FSM"""
 from aiogram.fsm.state import State, StatesGroup
 
 
@@ -17,3 +16,8 @@ class AdminStates(StatesGroup):
     awaiting_message = State()
     awaiting_booking_data = State()
     awaiting_broadcast_message = State()
+
+
+class BroadcastState(StatesGroup):
+    """Состояния для рассылки"""
+    waiting_message = State()
