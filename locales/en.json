@@ -1,0 +1,84 @@
+{
+  "common": {
+    "booking": "Book",
+    "my_bookings": "My Bookings",
+    "about_service": "About Service",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "back": "Back",
+    "yes": "Yes",
+    "no": "No",
+    "error": "Error",
+    "success": "Success",
+    "loading": "Loading..."
+  },
+  "booking": {
+    "step_1_title": "📍 STEP 1 of 3: Select Date",
+    "step_2_title": "📍 STEP 2 of 3: Select Time",
+    "step_3_title": "📍 STEP 3 of 3: Confirmation",
+    "legend": "🟢 = all slots free\n🟡 = some slots available\n🔴 = all booked\n⚫ = past date",
+    "bookings_count": "📊 Your bookings: {current}/{max}",
+    "limit_reached": "⚠️ You already have {max} active bookings.\n\nCancel one to book again.\n📋 My Bookings → select booking to cancel",
+    "past_date_error": "❌ Cannot select past date",
+    "no_slots": "❌ All slots are booked for this date\n\nPlease select another date",
+    "slots_available": "🟢 Available: {free}/{total} slots",
+    "few_slots": "⚠️ Few slots left — book now!",
+    "slot_legend": "✅ = available | ❌ = booked",
+    "confirmation_text": "✅ Confirm?",
+    "success_message": "✅ BOOKING CONFIRMED!\n\n📅 {date} ({day})\n🕒 {time}\n⏱ {duration}\n📍 {location}\n💰 {price}\n\n⏰ Reminder in 24 hours\n📋 'My Bookings' — view all",
+    "slot_taken": "❌ This slot is already taken!",
+    "cancelled": "❌ Booking cancelled\n\nYou returned to main menu"
+  },
+  "my_bookings": {
+    "title": "📋 YOUR ACTIVE BOOKINGS:",
+    "no_bookings": "📝 You have no active bookings",
+    "today": "today!",
+    "tomorrow": "tomorrow",
+    "in_days": "in {days} days",
+    "cancel_button": "❌ Cancel #{num}",
+    "reschedule_button": "🔄 Reschedule #{num}"
+  },
+  "cancel": {
+    "confirmation": "⚠️ CANCELLATION CONFIRMATION\n\n📅 {date}\n🕒 {time}\n\nAre you sure?",
+    "too_late": "⚠️ Only {hours}h until appointment\nCancellation allowed {limit}h before.\nPlease contact administrator.",
+    "success": "✅ BOOKING CANCELLED\n\n📅 {date}\n🕒 {time}\n\nYou can book again anytime",
+    "declined": "👍 BOOKING KEPT\n\nYou can view it in 'My Bookings'",
+    "yes_button": "✅ Yes, cancel",
+    "no_button": "❌ No, keep it"
+  },
+  "reschedule": {
+    "title": "📅 RESCHEDULING\n\nStep 1: Select NEW date\n\n🟢🟡🔴 — day status",
+    "confirmation": "📅 RESCHEDULE CONFIRMATION\n\nReschedule to:\n📅 {date} ({day})\n🕒 {time}\n\nConfirm?",
+    "success": "✅ BOOKING RESCHEDULED!\n\nOld date: {old_date} {old_time}\n\nNew date:\n📅 {date} ({day})\n🕒 {time}\n\n⏰ Reminder in 24 hours",
+    "cancelled": "❌ Rescheduling cancelled\n\nYour booking remains unchanged",
+    "confirm_button": "✅ Confirm rescheduling",
+    "other_time": "🔙 Select another time",
+    "cancel_button": "❌ Cancel rescheduling"
+  },
+  "feedback": {
+    "request": "💚 Thank you for your feedback!\n\nYour rating: {stars}\n\nWe hope to see you again! 😊"
+  },
+  "days": {
+    "monday": "Monday",
+    "tuesday": "Tuesday",
+    "wednesday": "Wednesday",
+    "thursday": "Thursday",
+    "friday": "Friday",
+    "saturday": "Saturday",
+    "sunday": "Sunday"
+  },
+  "months": {
+    "january": "January",
+    "february": "February",
+    "march": "March",
+    "april": "April",
+    "may": "May",
+    "june": "June",
+    "july": "July",
+    "august": "August",
+    "september": "September",
+    "october": "October",
+    "november": "November",
+    "december": "December"
+  }
+}
