@@ -1,6 +1,7 @@
 """Конфигурация приложения"""
 
 import os
+import re
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -17,8 +18,16 @@ if not ADMIN_IDS_STR:
 
 ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS_STR.split(",") if id.strip()]
 
+# Валидация токена бота
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN not found in .env file")
+
+# Проверка формата токена Telegram: 123456789:ABCdef_1234567890ABCdef
+if not re.match(r'^\d{8,10}:[A-Za-z0-9_-]{35}$', BOT_TOKEN):
+    raise ValueError(
+        "Invalid BOT_TOKEN format. Expected format: 123456789:ABCdef_123..."
+    )
+
 if not ADMIN_IDS:
     raise ValueError("No valid admin IDs provided")
 
@@ -43,7 +52,7 @@ TIMEZONE = ZoneInfo("Europe/Moscow")
 ONBOARDING_DELAY_SHORT = 1.0  # Короткая задержка между сообщениями
 ONBOARDING_DELAY_LONG = 4.0   # Длинная задержка для чтения
 BROADCAST_DELAY = 0.05        # Задержка между сообщениями в рассылке (50ms)
-RATE_LIMIT_TIME = 1.0         # Время между действиями одного пользователя (ИСПРАВЛЕНО)
+RATE_LIMIT_TIME = 1.0         # Время между действиями одного пользователя
 
 # FSM таймауты (в секундах)
 FSM_STATE_TTL = 600  # 10 минут - автоматический сброс состояния
