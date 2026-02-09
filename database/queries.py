@@ -73,9 +73,33 @@ class Database:
                 ON analytics(user_id, event)""")
             await db.execute("""CREATE INDEX IF NOT EXISTS idx_blocked_date
                 ON blocked_slots(date, time)""")
+            
+            # ИСПРАВЛЕНО: Уникальный индекс для защиты от race condition
+            await db.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_user_active_bookings 
+                ON bookings(user_id, date, time)"""
+            )
+            
+            # ИСПРАВЛЕНО: Индексы для аналитики
+            await db.execute(
+                """CREATE INDEX IF NOT EXISTS idx_analytics_timestamp
+                ON analytics(timestamp)"""
+            )
+            await db.execute(
+                """CREATE INDEX IF NOT EXISTS idx_feedback_timestamp
+                ON feedback(timestamp)"""
+            )
+            await db.execute(
+                """CREATE INDEX IF NOT EXISTS idx_feedback_user
+                ON feedback(user_id)"""
+            )
+            await db.execute(
+                """CREATE INDEX IF NOT EXISTS idx_bookings_date_time
+                ON bookings(date, time)"""
+            )
 
             await db.commit()
-            logging.info("Database initialized with indexes")
+            logging.info("Database initialized with indexes and race condition protection")
 
     @staticmethod
     async def log_event(user_id: int, event: str, data: str = ""):
