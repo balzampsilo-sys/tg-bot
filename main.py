@@ -5,17 +5,18 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
+from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import BOT_TOKEN, DATABASE_PATH
+from database.queries import Database
+from database.migrations.migration_manager import MigrationManager
+from database.migrations.versions.v004_add_services import AddServicesBackwardCompatible
 from handlers import admin_handlers, booking_handlers, user_handlers
 from middlewares.rate_limit import RateLimitMiddleware
 from services.booking_service import BookingService
 from services.notification_service import NotificationService
 from utils.retry import async_retry
-from utils.sqlite_storage import SQLiteStorage, init_fsm_storage
-from database.migrations.migration_manager import MigrationManager
-from database.migrations.versions import InitialSchema, AddVersionColumn
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -24,16 +25,19 @@ logging.basicConfig(
 
 async def init_database():
     """Инициализация БД с миграциями"""
+    # Сначала создаем базовую структуру (если еще не создана)
+    await Database.init_db()
+    
+    # Затем применяем миграции
     manager = MigrationManager(DATABASE_PATH)
     
     # Регистрируем миграции
-    manager.register(InitialSchema)
-    manager.register(AddVersionColumn)
+    manager.register(AddServicesBackwardCompatible)
     
     # Применяем миграции
     await manager.migrate()
     
-    logging.info("✅ Database migrations completed")
+    logging.info("✅ Database initialized with migrations")
 
 
 @async_retry(
@@ -46,11 +50,7 @@ async def start_bot():
     """Запуск бота с retry логикой"""
     # Инициализация
     bot = Bot(token=BOT_TOKEN)
-    
-    # ИСПРАВЛЕНО: Используем SQLite storage вместо MemoryStorage
-    await init_fsm_storage("fsm_storage.db")
-    storage = SQLiteStorage("fsm_storage.db", state_ttl=600, data_ttl=600)
-    
+    storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     
     # Настройка планировщика с одним исполнителем
@@ -65,7 +65,7 @@ async def start_bot():
         }
     )
 
-    # ИСПРАВЛЕНО: Инициализация БД с миграциями
+    # Инициализация БД
     await init_database()
 
     # Сервисы
@@ -91,13 +91,12 @@ async def start_bot():
     # Запуск планировщика
     scheduler.start()
 
-    logging.info("🚀 Bot started with persistent storage")
+    logging.info("🚀 Bot started")
 
     try:
         await dp.start_polling(bot, skip_updates=True)
     finally:
         await bot.session.close()
-        await storage.close()
         scheduler.shutdown()
 
 

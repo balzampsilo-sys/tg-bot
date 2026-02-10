@@ -1,4 +1,4 @@
-"""Менеджер миграций БД"""
+"""Менеджер миграций базы данных"""
 
 import logging
 from typing import List, Type
@@ -24,7 +24,7 @@ class Migration(ABC):
 
 
 class MigrationManager:
-    """Управление миграциями"""
+    """Управление миграциями базы данных"""
     
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -79,10 +79,10 @@ class MigrationManager:
                             (migration.version, migration.description)
                         )
                         await db.commit()
-                        logging.info(f"Migration {migration.version} applied successfully")
+                        logging.info(f"✅ Migration {migration.version} applied successfully")
                     except Exception as e:
                         await db.rollback()
-                        logging.error(f"Migration {migration.version} failed: {e}")
+                        logging.error(f"❌ Migration {migration.version} failed: {e}")
                         raise
     
     async def rollback(self, target_version: int):
@@ -90,7 +90,7 @@ class MigrationManager:
         current = await self.get_current_version()
         
         if current <= target_version:
-            logging.info("Nothing to rollback")
+            logging.info(f"Nothing to rollback")
             return
         
         async with aiosqlite.connect(self.db_path) as db:
@@ -107,8 +107,8 @@ class MigrationManager:
                             (migration.version,)
                         )
                         await db.commit()
-                        logging.info(f"Migration {migration.version} rolled back")
+                        logging.info(f"✅ Migration {migration.version} rolled back")
                     except Exception as e:
                         await db.rollback()
-                        logging.error(f"Rollback {migration.version} failed: {e}")
+                        logging.error(f"❌ Rollback {migration.version} failed: {e}")
                         raise
