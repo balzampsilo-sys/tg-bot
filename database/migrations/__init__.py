@@ -1,5 +1,5 @@
-"""Пакет для миграций базы данных"""
+"""Migration system"""
 
-from database.migrations.migration_manager import Migration, MigrationManager
+from database.migrations.migration_manager import MigrationManager, Migration
 
-__all__ = ["Migration", "MigrationManager"]
+__all__ = ['MigrationManager', 'Migration']
