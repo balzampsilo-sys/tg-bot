@@ -5,20 +5,35 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
-from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import BOT_TOKEN
-from database.queries import Database
+from config import BOT_TOKEN, DATABASE_PATH
 from handlers import admin_handlers, booking_handlers, user_handlers
 from middlewares.rate_limit import RateLimitMiddleware
 from services.booking_service import BookingService
 from services.notification_service import NotificationService
 from utils.retry import async_retry
+from utils.sqlite_storage import SQLiteStorage, init_fsm_storage
+from database.migrations.migration_manager import MigrationManager
+from database.migrations.versions import InitialSchema, AddVersionColumn
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+
+
+async def init_database():
+    """Инициализация БД с миграциями"""
+    manager = MigrationManager(DATABASE_PATH)
+    
+    # Регистрируем миграции
+    manager.register(InitialSchema)
+    manager.register(AddVersionColumn)
+    
+    # Применяем миграции
+    await manager.migrate()
+    
+    logging.info("✅ Database migrations completed")
 
 
 @async_retry(
@@ -31,7 +46,11 @@ async def start_bot():
     """Запуск бота с retry логикой"""
     # Инициализация
     bot = Bot(token=BOT_TOKEN)
-    storage = MemoryStorage()
+    
+    # ИСПРАВЛЕНО: Используем SQLite storage вместо MemoryStorage
+    await init_fsm_storage("fsm_storage.db")
+    storage = SQLiteStorage("fsm_storage.db", state_ttl=600, data_ttl=600)
+    
     dp = Dispatcher(storage=storage)
     
     # Настройка планировщика с одним исполнителем
@@ -46,8 +65,8 @@ async def start_bot():
         }
     )
 
-    # Инициализация БД
-    await Database.init_db()
+    # ИСПРАВЛЕНО: Инициализация БД с миграциями
+    await init_database()
 
     # Сервисы
     booking_service = BookingService(scheduler, bot)
@@ -57,14 +76,14 @@ async def start_bot():
     dp["booking_service"] = booking_service
     dp["notification_service"] = notification_service
 
-    # ДОБАВЛЕНО: Rate limiting middleware
+    # Rate limiting middleware
     dp.message.middleware(RateLimitMiddleware(rate_limit=0.5))  # 0.5 сек между сообщениями
     dp.callback_query.middleware(RateLimitMiddleware(rate_limit=0.3))  # 0.3 сек между callback
 
     # Регистрация роутеров (ВАЖЕН ПОРЯДОК!)
     dp.include_router(admin_handlers.router)      # 1. Админ первым
     dp.include_router(booking_handlers.router)    # 2. Бронирования
-    dp.include_router(user_handlers.router)       # 3. Пользователи последним (есть catch-all)
+    dp.include_router(user_handlers.router)       # 3. Пользователи последним (catch-all)
 
     # Восстановление напоминаний
     await booking_service.restore_reminders()
@@ -72,12 +91,13 @@ async def start_bot():
     # Запуск планировщика
     scheduler.start()
 
-    logging.info("🚀 Bot started")
+    logging.info("🚀 Bot started with persistent storage")
 
     try:
         await dp.start_polling(bot, skip_updates=True)
     finally:
         await bot.session.close()
+        await storage.close()
         scheduler.shutdown()
 
 
