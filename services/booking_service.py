@@ -2,15 +2,15 @@
 
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Tuple
 
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import DATABASE_PATH, MAX_BOOKINGS_PER_USER, TIMEZONE
+from config import DATABASE_PATH, MAX_BOOKINGS_PER_USER
 from database.queries import Database
-from utils.helpers import now_local
+from utils.datetime_utils import now_local, parse_datetime
 
 
 class BookingService:
@@ -33,16 +33,17 @@ class BookingService:
             await db.execute("BEGIN IMMEDIATE")
 
             try:
-                # ИСПРАВЛЕНО: Проверяем и лимит, и слот одним запросом
+                # Проверяем и лимит, и слот одним запросом
                 async with db.execute(
                     """SELECT 
                         (SELECT COUNT(*) FROM bookings WHERE user_id=? AND date >= date('now')) as user_count,
-                        (SELECT COUNT(*) FROM bookings WHERE date=? AND time=?) as slot_taken
+                        (SELECT COUNT(*) FROM bookings WHERE date=? AND time=?) as slot_taken,
+                        (SELECT COUNT(*) FROM blocked_slots WHERE date=? AND time=?) as is_blocked
                     """,
-                    (user_id, date_str, time_str),
+                    (user_id, date_str, time_str, date_str, time_str),
                 ) as cursor:
                     result = await cursor.fetchone()
-                    user_count, slot_taken = result
+                    user_count, slot_taken, is_blocked = result
 
                 if user_count >= MAX_BOOKINGS_PER_USER:
                     await db.rollback()
@@ -53,6 +54,11 @@ class BookingService:
                     await db.rollback()
                     logging.info(f"Slot {date_str} {time_str} already taken")
                     return False, "slot_taken"
+                    
+                if is_blocked > 0:
+                    await db.rollback()
+                    logging.info(f"Slot {date_str} {time_str} is blocked")
+                    return False, "slot_blocked"
 
                 # Создаем запись
                 cursor = await db.execute(
@@ -91,62 +97,73 @@ class BookingService:
         new_time_str: str,
         user_id: int,
         username: str,
-    ) -> bool:
-        """Перенос записи в одной транзакции"""
+    ) -> Tuple[bool, str]:
+        """Перенос записи в одной транзакции (ИСПРАВЛЕНО: race condition)
+        
+        Returns:
+            Tuple[bool, str]: (success, error_code)
+        """
         async with aiosqlite.connect(DATABASE_PATH) as db:
             await db.execute("BEGIN IMMEDIATE")
 
             try:
                 # 1. Проверяем что старая запись существует
                 async with db.execute(
-                    "SELECT id FROM bookings WHERE id=? AND user_id=? AND date=? AND time=?",
-                    (booking_id, user_id, old_date_str, old_time_str),
+                    "SELECT id FROM bookings WHERE id=? AND user_id=?",
+                    (booking_id, user_id),
                 ) as cursor:
-                    old_booking = await cursor.fetchone()
+                    if not await cursor.fetchone():
+                        await db.rollback()
+                        logging.warning(f"Booking {booking_id} not found for user {user_id}")
+                        return False, "booking_not_found"
 
-                if not old_booking:
-                    await db.rollback()
-                    logging.warning(
-                        f"Booking {booking_id} not found for user {user_id}"
-                    )
-                    return False
-
-                # 2. Проверяем что новый слот свободен
+                # 2. Проверяем что новый слот свободен И не заблокирован
                 async with db.execute(
-                    "SELECT id FROM bookings WHERE date=? AND time=?",
-                    (new_date_str, new_time_str),
+                    """SELECT 
+                        (SELECT COUNT(*) FROM bookings WHERE date=? AND time=?) as booking_exists,
+                        (SELECT COUNT(*) FROM blocked_slots WHERE date=? AND time=?) as is_blocked
+                    """,
+                    (new_date_str, new_time_str, new_date_str, new_time_str),
                 ) as cursor:
-                    existing = await cursor.fetchone()
+                    result = await cursor.fetchone()
+                    booking_exists, is_blocked = result
 
-                if existing:
+                    if booking_exists > 0:
+                        await db.rollback()
+                        logging.info(f"Slot {new_date_str} {new_time_str} already taken")
+                        return False, "slot_taken"
+                        
+                    if is_blocked > 0:
+                        await db.rollback()
+                        logging.info(f"Slot {new_date_str} {new_time_str} is blocked")
+                        return False, "slot_blocked"
+
+                # 3. Атомарное обновление с проверкой UNIQUE constraint
+                try:
+                    cursor = await db.execute(
+                        """UPDATE bookings
+                        SET date=?, time=?, created_at=?
+                        WHERE id=? AND user_id=?""",
+                        (new_date_str, new_time_str, now_local().isoformat(), booking_id, user_id),
+                    )
+
+                    # Проверяем что запись действительно обновилась
+                    if cursor.rowcount == 0:
+                        await db.rollback()
+                        return False, "booking_not_found"
+
+                    await db.commit()
+
+                except sqlite3.IntegrityError:
+                    # Кто-то успел занять слот между проверкой и UPDATE
                     await db.rollback()
-                    logging.info(f"Slot {new_date_str} {new_time_str} already taken")
-                    return False
-
-                # 3. Обновляем запись (вместо удаления и создания)
-                await db.execute(
-                    """UPDATE bookings
-                    SET date=?, time=?, created_at=?
-                    WHERE id=?""",
-                    (new_date_str, new_time_str, now_local().isoformat(), booking_id),
-                )
-
-                await db.commit()
+                    logging.warning(f"Race condition detected: slot {new_date_str} {new_time_str} taken")
+                    return False, "slot_taken"
 
                 # 4. Перепланируем напоминания (вне транзакции)
-                try:
-                    self.scheduler.remove_job(f"reminder_{booking_id}")
-                except Exception:
-                    pass
-
-                try:
-                    self.scheduler.remove_job(f"feedback_{booking_id}")
-                except Exception:
-                    pass
-
-                await self._schedule_reminder(
-                    booking_id, new_date_str, new_time_str, user_id
-                )
+                self._remove_job_safe(f"reminder_{booking_id}")
+                self._remove_job_safe(f"feedback_{booking_id}")
+                await self._schedule_reminder(booking_id, new_date_str, new_time_str, user_id)
 
                 await Database.log_event(
                     user_id,
@@ -155,23 +172,27 @@ class BookingService:
                 )
 
                 logging.info(f"Booking {booking_id} rescheduled successfully")
-                return True
+                return True, "success"
 
             except Exception as e:
                 await db.rollback()
                 logging.error(f"Error in reschedule_booking: {e}")
-                return False
+                return False, "unknown_error"
+
+    def _remove_job_safe(self, job_id: str):
+        """Безопасное удаление задачи из scheduler"""
+        try:
+            self.scheduler.remove_job(job_id)
+        except Exception:
+            pass
 
     async def _schedule_reminder(
         self, booking_id: int, date_str: str, time_str: str, user_id: int
     ):
-        """Планирование напоминаний"""
+        """Планирование напоминаний (ИСПРАВЛЕНО: timezone)"""
         try:
-            # ИСПРАВЛЕНО: используем localize() вместо replace()
-            booking_datetime = datetime.strptime(
-                f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
-            )
-            booking_datetime = TIMEZONE.localize(booking_datetime)
+            # Используем новую функцию парсинга
+            booking_datetime = parse_datetime(date_str, time_str)
             now = now_local()
             time_until_booking = booking_datetime - now
 
@@ -240,15 +261,8 @@ class BookingService:
                 await db.commit()
 
             # Удаляем напоминания
-            try:
-                self.scheduler.remove_job(f"reminder_{booking_id}")
-            except Exception:
-                pass
-
-            try:
-                self.scheduler.remove_job(f"feedback_{booking_id}")
-            except Exception:
-                pass
+            self._remove_job_safe(f"reminder_{booking_id}")
+            self._remove_job_safe(f"feedback_{booking_id}")
 
             await Database.log_event(
                 user_id, "booking_cancelled", f"{date_str} {time_str}"
@@ -260,7 +274,7 @@ class BookingService:
             return False, 0
 
     async def restore_reminders(self):
-        """Восстановить напоминания после рестарта"""
+        """Восстановить напоминания после рестарта (ИСПРАВЛЕНО: timezone)"""
         try:
             now = now_local()
             async with aiosqlite.connect(DATABASE_PATH) as db:
@@ -271,11 +285,7 @@ class BookingService:
 
             restored_count = 0
             for booking_id, date_str, time_str, user_id in all_bookings:
-                # ИСПРАВЛЕНО: используем localize()
-                booking_datetime = datetime.strptime(
-                    f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
-                )
-                booking_datetime = TIMEZONE.localize(booking_datetime)
+                booking_datetime = parse_datetime(date_str, time_str)
 
                 # Восстановить напоминание
                 reminder_time = booking_datetime - timedelta(hours=24)
@@ -319,6 +329,7 @@ class BookingService:
     async def _send_reminder(self, user_id: int, date_str: str, time_str: str):
         """Отправка напоминания"""
         try:
+            from datetime import datetime
             from config import DAY_NAMES, SERVICE_LOCATION
 
             date_obj = datetime.strptime(date_str, "%Y-%m-%d")
